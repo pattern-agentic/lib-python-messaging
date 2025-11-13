@@ -1,0 +1,38 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "pattern_agentic_messaging"
+version = "0.8.0"
+description = "SLIM-powered messaging"
+authors = [
+  { name="Amos Joshua", email="amos@patternagentic.ai" }
+]
+readme = "README.md"
+requires-python = ">=3.11"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+  "slim-bindings>=0.6.3"
+]
+
+[project.optional-dependencies]
+
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pattern_agentic_messaging"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.1",
+    "pytest-asyncio>=0.21.1",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+
