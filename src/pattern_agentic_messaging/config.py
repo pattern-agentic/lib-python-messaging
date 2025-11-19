@@ -1,7 +1,6 @@
 from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import Optional
-from .types import SessionMode, GroupMode
 
 @dataclass
 class PASlimConfigBase:
@@ -15,10 +14,8 @@ class PASlimConfigBase:
 @dataclass
 class PASlimP2PConfig(PASlimConfigBase):
     peer_name: Optional[str] = None
-    mode: SessionMode = SessionMode.ACTIVE
 
 @dataclass
 class PASlimGroupConfig(PASlimConfigBase):
-    channel_name: str = ""
-    mode: GroupMode = GroupMode.MODERATOR
+    channel_name: Optional[str] = None
     invites: list[str] = field(default_factory=list)

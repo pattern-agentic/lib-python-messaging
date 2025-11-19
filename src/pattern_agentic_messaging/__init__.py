@@ -1,7 +1,7 @@
 from .config import PASlimConfigBase, PASlimP2PConfig, PASlimGroupConfig
 from .session import PASlimSession, PASlimP2PSession, PASlimGroupSession
 from .app import PASlimApp
-from .types import SessionMode, GroupMode, MessagePayload
+from .types import MessagePayload
 from .exceptions import (
     PAMessagingError,
     ConnectionError,
@@ -19,8 +19,6 @@ __all__ = [
     "PASlimP2PSession",
     "PASlimGroupSession",
     "PASlimApp",
-    "SessionMode",
-    "GroupMode",
     "MessagePayload",
     "PAMessagingError",
     "ConnectionError",

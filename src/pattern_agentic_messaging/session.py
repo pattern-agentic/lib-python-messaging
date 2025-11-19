@@ -1,6 +1,6 @@
 import asyncio
 import uuid
-from typing import Optional, Callable, Any
+from typing import Optional, Callable, Any, Dict
 from datetime import timedelta
 from .types import MessagePayload
 from .messages import encode_message, decode_message
@@ -9,11 +9,18 @@ from .exceptions import SessionClosedError, TimeoutError as PATimeoutError
 class PASlimSession:
     def __init__(self, slim_session):
         self._session = slim_session
+        self._session_id = str(uuid.uuid4())
+        self.context: Dict[str, Any] = {}
         self._queue: asyncio.Queue = asyncio.Queue()
         self._read_task: Optional[asyncio.Task] = None
         self._callbacks: list[Callable] = []
         self._pending_requests: dict[str, asyncio.Future] = {}
         self._closed = False
+
+    @property
+    def session_id(self) -> str:
+        """Unique identifier for this session instance."""
+        return self._session_id
 
     async def _read_loop(self):
         while not self._closed:
