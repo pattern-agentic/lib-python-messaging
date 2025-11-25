@@ -193,6 +193,10 @@ class PASlimApp:
         This is a synchronous method that sets up signal handlers,
         creates an event loop, and runs the async message handling loop.
 
+        Signal handling:
+        - First SIGINT/SIGTERM: graceful shutdown (waits for cleanup)
+        - Second signal: forced shutdown (cancels immediately)
+
         Example:
             app = PASlimApp(config)
 
@@ -209,10 +213,14 @@ class PASlimApp:
 
         self._running = True
         main_task = None
+        shutdown_requested = False
 
         def signal_handler():
-            self.stop()
-            if main_task and not main_task.done():
+            nonlocal shutdown_requested
+            if not shutdown_requested:
+                shutdown_requested = True
+                self.stop()
+            elif main_task and not main_task.done():
                 main_task.cancel()
 
         for s in (sig.SIGTERM, sig.SIGINT):
