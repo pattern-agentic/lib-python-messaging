@@ -207,17 +207,16 @@ class PASlimApp:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
 
-        def signal_handler(signum, frame):
-            self.stop()
-
-        sig.signal(sig.SIGTERM, signal_handler)
-        sig.signal(sig.SIGINT, signal_handler)
+        for s in (sig.SIGTERM, sig.SIGINT):
+            loop.add_signal_handler(s, self.stop)
 
         try:
             loop.run_until_complete(self._run_async())
         except KeyboardInterrupt:
             pass
         finally:
+            for s in (sig.SIGTERM, sig.SIGINT):
+                loop.remove_signal_handler(s)
             loop.close()
 
     async def _run_async(self):
@@ -454,7 +453,7 @@ class PASlimApp:
         try:
             listener_task = asyncio.create_task(session_listener())
 
-            while True:
+            while self._running:
                 # Check if listener crashed
                 if listener_task.done():
                     exc = listener_task.exception()
