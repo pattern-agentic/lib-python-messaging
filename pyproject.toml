@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "pattern_agentic_messaging"
-version = "0.8.0"
+version = "0.8.1"
 description = "SLIM-powered messaging"
 authors = [
   { name="Amos Joshua", email="amos@patternagentic.ai" }
@@ -17,7 +17,7 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 dependencies = [
-  "slim-bindings>=0.6.3"
+  "slim-bindings>=0.6.3,0.7.0"
 ]
 
 [project.optional-dependencies]

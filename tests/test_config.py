@@ -1,8 +1,8 @@
 from datetime import timedelta
-from pattern_agentic_messaging import PASlimP2PConfig, PASlimGroupConfig, SessionMode, GroupMode
+from pattern_agentic_messaging import PASlimConfigP2P, PASlimConfigGroup, SessionMode, GroupMode
 
 def test_p2p_config_defaults():
-    config = PASlimP2PConfig(
+    config = PASlimConfigP2P(
         local_name="org/ns/app/inst",
         endpoint="https://example.com",
         auth_secret="secret123"
@@ -13,7 +13,7 @@ def test_p2p_config_defaults():
     assert config.mode == SessionMode.ACTIVE
 
 def test_group_config_defaults():
-    config = PASlimGroupConfig(
+    config = PASlimConfigGroup(
         local_name="org/ns/app/inst",
         endpoint="https://example.com",
         auth_secret="secret123",

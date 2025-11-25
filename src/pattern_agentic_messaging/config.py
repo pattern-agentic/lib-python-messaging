@@ -2,8 +2,9 @@ from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import Optional
 
+
 @dataclass
-class PASlimConfigBase:
+class PASlimConfig:
     local_name: str
     endpoint: str
     auth_secret: Optional[str] = None
@@ -11,11 +12,13 @@ class PASlimConfigBase:
     timeout: timedelta = field(default_factory=lambda: timedelta(seconds=5))
     mls_enabled: bool = True
 
-@dataclass
-class PASlimP2PConfig(PASlimConfigBase):
-    peer_name: Optional[str] = None
 
 @dataclass
-class PASlimGroupConfig(PASlimConfigBase):
+class PASlimConfigP2P(PASlimConfig):
+    peer_name: Optional[str] = None
+
+
+@dataclass
+class PASlimConfigGroup(PASlimConfig):
     channel_name: Optional[str] = None
     invites: list[str] = field(default_factory=list)

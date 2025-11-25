@@ -1,4 +1,4 @@
-from .config import PASlimConfigBase, PASlimP2PConfig, PASlimGroupConfig
+from .config import PASlimConfig, PASlimP2PConfig, PASlimConfigGroup
 from .session import PASlimSession, PASlimP2PSession, PASlimGroupSession
 from .app import PASlimApp
 from .types import MessagePayload

@@ -1,14 +1,14 @@
 import asyncio
 import slim_bindings
 from typing import AsyncIterator, Optional
-from .config import PASlimConfigBase
+from .config import PASlimConfig
 from .session import PASlimSession, PASlimP2PSession, PASlimGroupSession
 from .auth import create_shared_secret_auth
 from .types import MessagePayload
 from .exceptions import AuthenticationError
 
 class PASlimApp:
-    def __init__(self, config: PASlimConfigBase):
+    def __init__(self, config: PASlimConfig):
         self.config = config
         self._app: Optional[slim_bindings.PyApp] = None
         self._message_handlers = []
