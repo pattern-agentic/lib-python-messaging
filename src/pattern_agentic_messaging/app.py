@@ -207,6 +207,8 @@ class PASlimApp:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
 
+        self._running = True
+
         for s in (sig.SIGTERM, sig.SIGINT):
             loop.add_signal_handler(s, self.stop)
 
@@ -472,16 +474,22 @@ class PASlimApp:
                     continue  # No message yet, loop back
 
         finally:
-            # Cleanup: cancel all tasks
+            # Cleanup: cancel all tasks with timeout to avoid hanging
             if listener_task and not listener_task.done():
                 listener_task.cancel()
                 try:
-                    await listener_task
-                except asyncio.CancelledError:
+                    await asyncio.wait_for(listener_task, timeout=0.5)
+                except (asyncio.CancelledError, asyncio.TimeoutError):
                     pass
 
             for task in list(session_tasks):
                 task.cancel()
 
             if session_tasks:
-                await asyncio.gather(*session_tasks, return_exceptions=True)
+                try:
+                    await asyncio.wait_for(
+                        asyncio.gather(*session_tasks, return_exceptions=True),
+                        timeout=0.5
+                    )
+                except asyncio.TimeoutError:
+                    pass

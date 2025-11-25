@@ -90,6 +90,9 @@ class PASlimSession:
         future = asyncio.Future()
         self._pending_requests[request_id] = future
 
+        if hasattr(payload, 'model_dump'):
+            payload = payload.model_dump()
+
         if isinstance(payload, dict):
             payload["_request_id"] = request_id
         else:

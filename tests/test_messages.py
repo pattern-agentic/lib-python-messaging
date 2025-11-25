@@ -31,3 +31,14 @@ def test_decode_binary():
     data = b"\x00\x01\x02"
     result = decode_message(data)
     assert result == data
+
+def test_encode_pydantic_model():
+    from pydantic import BaseModel
+
+    class TestMessage(BaseModel):
+        type: str
+        value: int
+
+    msg = TestMessage(type="test", value=42)
+    result = encode_message(msg)
+    assert result == b'{"type": "test", "value": 42}'
