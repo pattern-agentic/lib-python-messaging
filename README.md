@@ -18,6 +18,7 @@ like `type`:
 
 ```python
 from pattern_agentic_messaging import PASlimApp, PASlimConfig
+from .models import QuestionRequest, StatusRequest, AnswerResponse
 
 config = PASlimConfig(
     local_name="org/ns/server/instance1",
@@ -36,16 +37,16 @@ async def on_connect(session):
         "agent": agent
     }
     
-# expects {"type": "prompt", "question": "...."}
-@app.on_message('prompt')
-async def handle_prompt(session, msg):
+
+@app.on_message
+async def handle_prompt(session, msg: QuestionRequest):
     agent = session.context.get("agent")
     response = await agent.ask(msg["question"])
-    await session.send({"type": "response", "answer": response})
+    await session.send(AnswerResponse(answer=response))
 
-# expects {"type": "status"}
-@app.on_message('status')
-async def handle_status(session, msg):
+
+@app.on_message
+async def handle_status(session, msg: StatusRequest):
     await session.send({"type": "status", "value": "ready"})
 
 @app.on_message
@@ -57,6 +58,26 @@ app.run()
 
 Use `PASlimConfigGroup` to create a group channel. 
 
+The models are pydantic models, which must have a literal field
+corresponding to the discriminator:
+
+```
+from pydantic import BaseModel
+
+class QuestionRequest(BaseModel):
+    type: Literal["question"] = "question"
+    prompt: str
+
+
+class StatusRequest(BaseModel):
+    type: Literal["status"] = "status"
+
+
+class AnswerResponse(BaseModel):
+    type: Literal["answer"] = "answer"
+    answer: str
+
+```
 
 ### Client
 
