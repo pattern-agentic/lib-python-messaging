@@ -12,6 +12,7 @@ class PASlimConfig:
     timeout: timedelta = field(default_factory=lambda: timedelta(seconds=5))
     mls_enabled: bool = True
     message_discriminator: Optional[str] = None
+    custom_headers: Optional[dict[str, str]] = None
 
 
 @dataclass

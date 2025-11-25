@@ -73,6 +73,8 @@ class PASlimApp:
         self._app = await slim_bindings.Slim.new(local_name, auth_provider, auth_verifier)
 
         slim_config = {"endpoint": self.config.endpoint}
+        if self.config.custom_headers:
+            slim_config["headers"] = self.config.custom_headers
         await self._app.connect(slim_config)
 
         return self
