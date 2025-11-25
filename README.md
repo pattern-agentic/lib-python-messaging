@@ -22,7 +22,8 @@ from pattern_agentic_messaging import PASlimApp, PASlimConfig
 config = PASlimConfig(
     local_name="org/ns/server/instance1",
     endpoint="https://slim.example.com",
-    auth_secret="shared-secret"
+    auth_secret="shared-secret",
+    message_discriminator="type"
 )
 
 app = PASlimApp(config)
@@ -35,13 +36,15 @@ async def on_connect(session):
         "agent": agent
     }
     
-@app.on_message('type', 'prompt')
+# expects {"type": "prompt", "question": "...."}
+@app.on_message('prompt')
 async def handle_prompt(session, msg):
     agent = session.context.get("agent")
-    response = await agent.ask(msg["prompt"])
+    response = await agent.ask(msg["question"])
     await session.send({"type": "response", "answer": response})
 
-@app.on_message('type', 'status')
+# expects {"type": "status"}
+@app.on_message('status')
 async def handle_status(session, msg):
     await session.send({"type": "status", "value": "ready"})
 
@@ -53,6 +56,7 @@ app.run()
 ```
 
 Use `PASlimConfigGroup` to create a group channel. 
+
 
 ### Client
 

@@ -1,11 +1,48 @@
 import asyncio
+import inspect
 import slim_bindings
-from typing import AsyncIterator, Optional
+from typing import AsyncIterator, Optional, Literal, get_type_hints, get_origin, get_args
 from .config import PASlimConfig
 from .session import PASlimSession, PASlimP2PSession, PASlimGroupSession
 from .auth import create_shared_secret_auth
 from .types import MessagePayload
 from .exceptions import AuthenticationError
+
+try:
+    from pydantic import BaseModel, ValidationError
+    PYDANTIC_AVAILABLE = True
+except ImportError:
+    PYDANTIC_AVAILABLE = False
+    BaseModel = None
+    ValidationError = None
+
+
+def _extract_literal_value(model: type, field_name: str) -> Optional[str]:
+    """Extract Literal value from a Pydantic model field."""
+    try:
+        hints = get_type_hints(model)
+        field_type = hints.get(field_name)
+        if get_origin(field_type) is Literal:
+            args = get_args(field_type)
+            if args:
+                return args[0]
+    except Exception:
+        pass
+    return None
+
+
+def _get_pydantic_model_from_handler(func) -> Optional[type]:
+    """Extract Pydantic model type from handler's msg parameter, if present."""
+    if not PYDANTIC_AVAILABLE:
+        return None
+    try:
+        hints = get_type_hints(func)
+        msg_type = hints.get('msg')
+        if msg_type and isinstance(msg_type, type) and issubclass(msg_type, BaseModel):
+            return msg_type
+    except Exception:
+        pass
+    return None
 
 class PASlimApp:
     def __init__(self, config: PASlimConfig):
@@ -51,6 +88,7 @@ class PASlimApp:
         Decorator to register a message handler with optional filtering.
 
         Can be used as a direct decorator or with discriminator arguments.
+        Supports Pydantic model type hints for automatic parsing.
 
         Examples:
             # Catch-all handler (no filter)
@@ -58,32 +96,63 @@ class PASlimApp:
             async def handler(session, msg):
                 await session.send(response)
 
-            # Filtered handler
+            # Filtered by value (requires message_discriminator in config)
+            @app.on_message('prompt')
+            async def handler(session, msg):
+                # Called when msg[config.message_discriminator] == 'prompt'
+                await session.send(response)
+
+            # Filtered by explicit field and value (legacy)
             @app.on_message('type', 'prompt')
             async def handler(session, msg):
                 # Only called when msg['type'] == 'prompt'
                 await session.send(response)
+
+            # Pydantic model handler (requires message_discriminator in config)
+            @app.on_message
+            async def handler(session, msg: PromptMessage):
+                # msg is automatically parsed as PromptMessage
+                await session.send(response)
         """
-        def decorator(func):
+        def _register_handler(func, disc_field, disc_value):
+            model = _get_pydantic_model_from_handler(func)
+            model_disc_value = None
+
+            if model:
+                if not self.config.message_discriminator:
+                    raise ValueError(
+                        f"Handler '{func.__name__}' uses Pydantic type hint, "
+                        f"but config.message_discriminator is not set"
+                    )
+                model_disc_value = _extract_literal_value(
+                    model, self.config.message_discriminator
+                )
+
             self._message_handlers.append({
-                'discriminator': discriminator,
-                'value': value,
-                'handler': func
+                'discriminator': disc_field,
+                'value': disc_value,
+                'handler': func,
+                'model': model,
+                'discriminator_value': model_disc_value,
             })
             return func
 
         # Direct decoration: @app.on_message
         if callable(discriminator):
             func = discriminator
-            self._message_handlers.append({
-                'discriminator': None,
-                'value': None,
-                'handler': func
-            })
-            return func
+            return _register_handler(func, None, None)
 
-        # Decorator factory: @app.on_message('key', 'val')
-        return decorator
+        # Single argument: @app.on_message('prompt') - uses config.message_discriminator
+        if discriminator is not None and value is None:
+            if not self.config.message_discriminator:
+                raise ValueError(
+                    f"Single-argument @on_message('{discriminator}') requires "
+                    f"config.message_discriminator to be set"
+                )
+            return lambda func: _register_handler(func, self.config.message_discriminator, discriminator)
+
+        # Two arguments: @app.on_message('type', 'prompt')
+        return lambda func: _register_handler(func, discriminator, value)
 
     def on_session_connect(self, func):
         """
@@ -158,58 +227,82 @@ class PASlimApp:
         if not self._message_handlers:
             raise ValueError("No message handlers registered. Use @app.on_message decorator.")
 
-        # Find catch-all handler
-        catch_all = None
+        # Find catch-all handler (no discriminator and no model discriminator_value)
+        catch_all_info = None
         for handler_info in self._message_handlers:
-            if handler_info['discriminator'] is None:
-                catch_all = handler_info['handler']
+            if handler_info['discriminator'] is None and handler_info.get('discriminator_value') is None:
+                catch_all_info = handler_info
                 break
 
         logger = logging.getLogger(__name__)
+        disc_field = self.config.message_discriminator
 
         async with self:
             async for session, msg in self:
                 if not self._running:
                     break
 
-                # Try filtered handlers first
                 matched = False
                 for handler_info in self._message_handlers:
                     disc = handler_info['discriminator']
                     val = handler_info['value']
                     handler = handler_info['handler']
+                    model = handler_info.get('model')
+                    model_disc_val = handler_info.get('discriminator_value')
 
-                    # Skip catch-all handlers
-                    if disc is None:
-                        continue
+                    # Pydantic model handler
+                    if model and isinstance(msg, dict):
+                        # Check discriminator match (fast path)
+                        if model_disc_val is not None:
+                            if msg.get(disc_field) != model_disc_val:
+                                continue  # Fall through to next handler
 
-                    # Check if message matches filter
-                    if isinstance(msg, dict) and msg.get(disc) == val:
-                        matched = True
+                        # Try to parse
                         try:
-                            await handler(session, msg)
-                        except Exception as exc:
-                            logger.error(
-                                f"Error in message handler: {exc}",
-                                exc_info=True
-                            )
-                        break  # First match wins
+                            parsed = model.model_validate(msg)
+                            matched = True
+                            try:
+                                await handler(session, parsed)
+                            except Exception as exc:
+                                logger.error(f"Error in message handler: {exc}", exc_info=True)
+                            break
+                        except ValidationError as e:
+                            matched = True
+                            await session.send({
+                                "error": "validation_error",
+                                "details": e.errors()
+                            })
+                            break
+
+                    # Legacy dict-based handler (skip catch-all for now)
+                    elif disc is not None:
+                        if isinstance(msg, dict) and msg.get(disc) == val:
+                            matched = True
+                            try:
+                                await handler(session, msg)
+                            except Exception as exc:
+                                logger.error(f"Error in message handler: {exc}", exc_info=True)
+                            break
 
                 # Fall back to catch-all if no specific handler matched
-                if not matched:
-                    if catch_all:
-                        try:
-                            await catch_all(session, msg)
-                        except Exception as exc:
-                            logger.error(
-                                f"Error in catch-all handler: {exc}",
-                                exc_info=True
-                            )
-                    else:
-                        # No handler matched and no catch-all
-                        logger.warning(
-                            f"No handler for message: {msg}"
-                        )
+                if not matched and catch_all_info:
+                    handler = catch_all_info['handler']
+                    model = catch_all_info.get('model')
+                    try:
+                        if model and isinstance(msg, dict):
+                            parsed = model.model_validate(msg)
+                            await handler(session, parsed)
+                        else:
+                            await handler(session, msg)
+                    except ValidationError as e:
+                        await session.send({
+                            "error": "validation_error",
+                            "details": e.errors()
+                        })
+                    except Exception as exc:
+                        logger.error(f"Error in catch-all handler: {exc}", exc_info=True)
+                elif not matched:
+                    logger.warning(f"No handler for message: {msg}")
 
     async def connect(self, peer_name: str) -> PASlimP2PSession:
         """

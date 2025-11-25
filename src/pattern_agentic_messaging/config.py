@@ -11,6 +11,7 @@ class PASlimConfig:
     max_retries: int = 5
     timeout: timedelta = field(default_factory=lambda: timedelta(seconds=5))
     mls_enabled: bool = True
+    message_discriminator: Optional[str] = None
 
 
 @dataclass
