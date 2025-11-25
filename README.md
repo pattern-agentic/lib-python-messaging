@@ -61,7 +61,7 @@ Use `PASlimConfigGroup` to create a group channel.
 The models are pydantic models, which must have a literal field
 corresponding to the discriminator:
 
-```
+```python
 from pydantic import BaseModel
 
 class QuestionRequest(BaseModel):
