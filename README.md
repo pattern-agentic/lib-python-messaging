@@ -1,6 +1,6 @@
 # Pattern Agentic Messaging
 
-An async SLIM wrapper with FastAPI-like interface
+An async SLIM wrapper with a FastAPI-like interface
 
 ## Installation
 
