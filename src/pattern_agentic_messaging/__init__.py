@@ -1,4 +1,4 @@
-from .config import PASlimConfig, PASlimP2PConfig, PASlimConfigGroup
+from .config import PASlimConfig, PASlimConfigP2P, PASlimConfigGroup
 from .session import PASlimSession, PASlimP2PSession, PASlimGroupSession
 from .app import PASlimApp
 from .types import MessagePayload
@@ -12,9 +12,9 @@ from .exceptions import (
 )
 
 __all__ = [
-    "PASlimConfigBase",
-    "PASlimP2PConfig",
-    "PASlimGroupConfig",
+    "PASlimConfig",
+    "PASlimConfigP2P",
+    "PASlimConfigGroup",
     "PASlimSession",
     "PASlimP2PSession",
     "PASlimGroupSession",
