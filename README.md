@@ -16,7 +16,7 @@ pip install pattern_agentic_messaging
 Route messages to decorated methods based on a _discriminator_ field
 like `type`:
 
-```
+```python
 from pattern_agentic_messaging import PASlimApp, PASlimConfig
 
 config = PASlimConfig(
