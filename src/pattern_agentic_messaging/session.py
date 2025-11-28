@@ -1,10 +1,14 @@
 import asyncio
+import logging
 import uuid
 from typing import Optional, Callable, Any, Dict
 from datetime import timedelta
 from .types import MessagePayload
 from .messages import encode_message, decode_message
 from .exceptions import SessionClosedError, TimeoutError as PATimeoutError
+from .utils import parse_name
+
+logger = logging.getLogger(__name__)
 
 class PASlimSession:
     def __init__(self, slim_session):
@@ -40,12 +44,13 @@ class PASlimSession:
                             await callback(decoded)
                         else:
                             callback(decoded)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"Callback error: {e}")
 
                 await self._queue.put((msg_ctx, decoded))
-            except Exception:
+            except Exception as e:
                 if not self._closed:
+                    logger.debug(f"Read loop error: {e}")
                     break
 
     async def __aenter__(self):
@@ -116,21 +121,11 @@ class PASlimP2PSession(PASlimSession):
 
 class PASlimGroupSession(PASlimSession):
     async def invite(self, participant_name: str):
-        import slim_bindings
-        parts = participant_name.split('/')
-        if len(parts) >= 3:
-            name = slim_bindings.Name(parts[0], parts[1], parts[2])
-        else:
-            raise ValueError(f"participant_name must be org/namespace/app")
+        name = parse_name(participant_name)
         handle = await self._session.invite(name)
         await handle
 
     async def remove(self, participant_name: str):
-        import slim_bindings
-        parts = participant_name.split('/')
-        if len(parts) >= 3:
-            name = slim_bindings.Name(parts[0], parts[1], parts[2])
-        else:
-            raise ValueError(f"participant_name must be org/namespace/app")
+        name = parse_name(participant_name)
         handle = await self._session.remove(name)
         await handle

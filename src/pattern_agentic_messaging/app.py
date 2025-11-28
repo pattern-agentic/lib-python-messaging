@@ -1,5 +1,5 @@
 import asyncio
-import inspect
+import logging
 import slim_bindings
 from typing import AsyncIterator, Optional, Literal, get_type_hints, get_origin, get_args
 from .config import PASlimConfig
@@ -7,6 +7,9 @@ from .session import PASlimSession, PASlimP2PSession, PASlimGroupSession
 from .auth import create_shared_secret_auth
 from .types import MessagePayload
 from .exceptions import AuthenticationError
+from .utils import parse_name
+
+logger = logging.getLogger(__name__)
 
 try:
     from pydantic import BaseModel, ValidationError
@@ -44,6 +47,7 @@ def _get_pydantic_model_from_handler(func) -> Optional[type]:
         pass
     return None
 
+
 class PASlimApp:
     def __init__(self, config: PASlimConfig):
         self.config = config
@@ -64,14 +68,7 @@ class PASlimApp:
             self.config.auth_secret
         )
 
-        parts = self.config.local_name.split('/')
-        if len(parts) == 3:
-            local_name = slim_bindings.Name(*parts)
-        elif len(parts) == 4:
-            local_name = slim_bindings.Name(parts[0], parts[1], parts[2])
-        else:
-            raise ValueError(f"local_name must be org/namespace/app or org/namespace/app/instance")
-
+        local_name = parse_name(self.config.local_name)
         self._app = slim_bindings.Slim(local_name, auth_provider, auth_verifier)
 
         slim_config = {"endpoint": self.config.endpoint}
@@ -242,8 +239,6 @@ class PASlimApp:
 
     async def _run_async(self):
         """Internal async runner for the decorator pattern."""
-        import logging
-
         if not self._message_handlers:
             raise ValueError("No message handlers registered. Use @app.on_message decorator.")
 
@@ -254,7 +249,6 @@ class PASlimApp:
                 catch_all_info = handler_info
                 break
 
-        logger = logging.getLogger(__name__)
         disc_field = self.config.message_discriminator
 
         async with self:
@@ -334,12 +328,7 @@ class PASlimApp:
         Returns:
             PASlimP2PSession for communicating with the peer
         """
-        parts = peer_name.split('/')
-        if len(parts) >= 3:
-            peer = slim_bindings.Name(parts[0], parts[1], parts[2])
-        else:
-            raise ValueError(f"peer_name must be org/namespace/app or org/namespace/app/instance")
-
+        peer = parse_name(peer_name)
         await self._app.set_route(peer)
 
         session_config = slim_bindings.SessionConfiguration.PointToPoint(
@@ -375,12 +364,7 @@ class PASlimApp:
         if invites is None:
             invites = []
 
-        parts = channel_name.split('/')
-        if len(parts) >= 3:
-            channel = slim_bindings.Name(parts[0], parts[1], parts[2])
-        else:
-            raise ValueError(f"channel_name must be org/namespace/channel")
-
+        channel = parse_name(channel_name)
         session_config = slim_bindings.SessionConfiguration.Group(
             max_retries=self.config.max_retries,
             timeout=self.config.timeout,
@@ -391,11 +375,7 @@ class PASlimApp:
         session = PASlimGroupSession(slim_session)
 
         for invite in invites:
-            parts = invite.split('/')
-            if len(parts) >= 3:
-                participant = slim_bindings.Name(parts[0], parts[1], parts[2])
-            else:
-                raise ValueError(f"invite name must be org/namespace/app")
+            participant = parse_name(invite)
             await self._app.set_route(participant)
             await session.invite(invite)
 
@@ -448,21 +428,21 @@ class PASlimApp:
                 if self._session_connect_handler:
                     try:
                         await self._session_connect_handler(session)
-                    except Exception:
-                        pass  # Don't let handler errors prevent session
+                    except Exception as e:
+                        logger.error(f"Error in session connect handler: {e}", exc_info=True)
 
                 async with session:
                     async for msg in session:
                         await message_queue.put((session, msg))
-            except Exception:
-                pass  # Session ended or errored - normal behavior
+            except Exception as e:
+                logger.debug(f"Session reader ended: {e}")
             finally:
                 # Call session disconnect handler if registered
                 if self._session_disconnect_handler:
                     try:
                         await self._session_disconnect_handler(session)
-                    except Exception:
-                        pass  # Don't let handler errors prevent cleanup
+                    except Exception as e:
+                        logger.error(f"Error in session disconnect handler: {e}", exc_info=True)
 
         async def session_listener():
             """Listen for new sessions and spawn reader tasks."""
