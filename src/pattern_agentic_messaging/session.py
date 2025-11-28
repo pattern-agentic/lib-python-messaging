@@ -77,7 +77,8 @@ class PASlimSession:
         if self._closed:
             raise SessionClosedError("Session is closed")
         data = encode_message(payload)
-        await self._session.publish(data)
+        handle = await self._session.publish(data)
+        await handle
 
     def on_message(self, callback: Callable[[Any], None]):
         self._callbacks.append(callback)

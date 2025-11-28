@@ -1,5 +1,10 @@
 
-## Version 0.8.4
+
+## v0.9.0
+
+  - upgraded slim-bindings to 0.7.0
+
+## v0.8.4
 
   - added support for `custom_headers` in `PASlimConfig`
 

@@ -41,7 +41,7 @@ async def on_connect(session):
 @app.on_message
 async def handle_prompt(session, msg: QuestionRequest):
     agent = session.context.get("agent")
-    response = await agent.ask(msg["question"])
+    response = await agent.ask(msg.question)
     await session.send(AnswerResponse(answer=response))
 
 
@@ -51,7 +51,7 @@ async def handle_status(session, msg: StatusRequest):
 
 @app.on_message
 async def handle_other(session, msg):
-    await session.send({"error": f"Unknown message type: {msg.get('type')}"})
+    await session.send({"error": f"Unknown message type: {msg}"})
 
 app.run()
 ```
