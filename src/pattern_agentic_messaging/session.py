@@ -118,16 +118,18 @@ class PASlimGroupSession(PASlimSession):
         import slim_bindings
         parts = participant_name.split('/')
         if len(parts) >= 3:
-            name = slim_bindings.PyName(parts[0], parts[1], parts[2])
+            name = slim_bindings.Name(parts[0], parts[1], parts[2])
         else:
             raise ValueError(f"participant_name must be org/namespace/app")
-        await self._session.invite(name)
+        handle = await self._session.invite(name)
+        await handle
 
     async def remove(self, participant_name: str):
         import slim_bindings
         parts = participant_name.split('/')
         if len(parts) >= 3:
-            name = slim_bindings.PyName(parts[0], parts[1], parts[2])
+            name = slim_bindings.Name(parts[0], parts[1], parts[2])
         else:
             raise ValueError(f"participant_name must be org/namespace/app")
-        await self._session.remove(name)
+        handle = await self._session.remove(name)
+        await handle

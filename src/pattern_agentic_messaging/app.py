@@ -47,7 +47,7 @@ def _get_pydantic_model_from_handler(func) -> Optional[type]:
 class PASlimApp:
     def __init__(self, config: PASlimConfig):
         self.config = config
-        self._app: Optional[slim_bindings.PyApp] = None
+        self._app: Optional[slim_bindings.Slim] = None
         self._message_handlers = []
         self._session_connect_handler = None
         self._session_disconnect_handler = None
@@ -56,6 +56,8 @@ class PASlimApp:
     async def __aenter__(self):
         if not self.config.auth_secret:
             raise AuthenticationError("auth_secret is required")
+        if len(self.config.auth_secret) < 32:
+            raise AuthenticationError("auth_secret must be at least 32 bytes")
 
         auth_provider, auth_verifier = create_shared_secret_auth(
             self.config.local_name,
@@ -64,13 +66,13 @@ class PASlimApp:
 
         parts = self.config.local_name.split('/')
         if len(parts) == 3:
-            local_name = slim_bindings.PyName(*parts)
+            local_name = slim_bindings.Name(*parts)
         elif len(parts) == 4:
-            local_name = slim_bindings.PyName(parts[0], parts[1], parts[2])
+            local_name = slim_bindings.Name(parts[0], parts[1], parts[2])
         else:
             raise ValueError(f"local_name must be org/namespace/app or org/namespace/app/instance")
 
-        self._app = await slim_bindings.Slim.new(local_name, auth_provider, auth_verifier)
+        self._app = slim_bindings.Slim(local_name, auth_provider, auth_verifier)
 
         slim_config = {"endpoint": self.config.endpoint}
         if self.config.custom_headers:
@@ -334,19 +336,19 @@ class PASlimApp:
         """
         parts = peer_name.split('/')
         if len(parts) >= 3:
-            peer = slim_bindings.PyName(parts[0], parts[1], parts[2])
+            peer = slim_bindings.Name(parts[0], parts[1], parts[2])
         else:
             raise ValueError(f"peer_name must be org/namespace/app or org/namespace/app/instance")
 
         await self._app.set_route(peer)
 
-        session_config = slim_bindings.PySessionConfiguration.PointToPoint(
-            peer_name=peer,
+        session_config = slim_bindings.SessionConfiguration.PointToPoint(
             max_retries=self.config.max_retries,
             timeout=self.config.timeout,
             mls_enabled=self.config.mls_enabled
         )
-        slim_session = await self._app.create_session(session_config)
+        slim_session, handle = await self._app.create_session(peer, session_config)
+        await handle
         return PASlimP2PSession(slim_session)
 
     async def accept(self) -> PASlimP2PSession:
@@ -375,23 +377,23 @@ class PASlimApp:
 
         parts = channel_name.split('/')
         if len(parts) >= 3:
-            channel = slim_bindings.PyName(parts[0], parts[1], parts[2])
+            channel = slim_bindings.Name(parts[0], parts[1], parts[2])
         else:
             raise ValueError(f"channel_name must be org/namespace/channel")
 
-        session_config = slim_bindings.PySessionConfiguration.Group(
-            channel_name=channel,
+        session_config = slim_bindings.SessionConfiguration.Group(
             max_retries=self.config.max_retries,
             timeout=self.config.timeout,
             mls_enabled=self.config.mls_enabled
         )
-        slim_session = await self._app.create_session(session_config)
+        slim_session, handle = await self._app.create_session(channel, session_config)
+        await handle
         session = PASlimGroupSession(slim_session)
 
         for invite in invites:
             parts = invite.split('/')
             if len(parts) >= 3:
-                participant = slim_bindings.PyName(parts[0], parts[1], parts[2])
+                participant = slim_bindings.Name(parts[0], parts[1], parts[2])
             else:
                 raise ValueError(f"invite name must be org/namespace/app")
             await self._app.set_route(participant)
