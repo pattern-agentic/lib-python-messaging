@@ -45,13 +45,14 @@ class PASlimSession:
                         else:
                             callback(decoded)
                     except Exception as e:
-                        logger.debug(f"Callback error: {e}")
+                        callback_name = getattr(callback, '__name__', repr(callback))
+                        logger.error(f"Error in callback '{callback_name}': {e}", exc_info=True)
 
                 await self._queue.put((msg_ctx, decoded))
             except Exception as e:
                 if not self._closed:
-                    logger.debug(f"Read loop error: {e}")
-                    break
+                    logger.error(f"Read loop error: {e}", exc_info=True)
+                break
 
     async def __aenter__(self):
         self._read_task = asyncio.create_task(self._read_loop())

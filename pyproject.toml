@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "pattern_agentic_messaging"
-version = "0.9.1"
+version = "0.9.2"
 description = "SLIM-powered messaging"
 authors = [
   { name="Amos Joshua", email="amos@patternagentic.ai" }
