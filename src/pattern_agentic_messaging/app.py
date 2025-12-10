@@ -278,7 +278,8 @@ class PASlimApp:
                             try:
                                 await handler(session, parsed)
                             except Exception as exc:
-                                logger.error(f"Error in message handler: {exc}", exc_info=True)
+                                model_name = model.__name__ if model else "untyped"
+                                logger.error(f"Error in handler '{handler.__name__}' for message type '{model_name}': {exc}", exc_info=True)
                             break
                         except ValidationError as e:
                             matched = True
@@ -295,7 +296,7 @@ class PASlimApp:
                             try:
                                 await handler(session, msg)
                             except Exception as exc:
-                                logger.error(f"Error in message handler: {exc}", exc_info=True)
+                                logger.error(f"Error in handler '{handler.__name__}' for discriminator {disc}={val}: {exc}", exc_info=True)
                             break
 
                 # Fall back to catch-all if no specific handler matched
@@ -314,7 +315,7 @@ class PASlimApp:
                             "details": e.errors()
                         })
                     except Exception as exc:
-                        logger.error(f"Error in catch-all handler: {exc}", exc_info=True)
+                        logger.error(f"Error in fallback message handler '{handler.__name__}': {exc}", exc_info=True)
                 elif not matched:
                     logger.warning(f"No handler for message: {msg}")
 
@@ -434,8 +435,10 @@ class PASlimApp:
                 async with session:
                     async for msg in session:
                         await message_queue.put((session, msg))
+            except (StopAsyncIteration, asyncio.CancelledError):
+                pass
             except Exception as e:
-                logger.debug(f"Session reader ended: {e}")
+                logger.error(f"Session reader error: {e}", exc_info=True)
             finally:
                 # Call session disconnect handler if registered
                 if self._session_disconnect_handler:
