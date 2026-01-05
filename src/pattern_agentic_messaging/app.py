@@ -55,6 +55,7 @@ class PASlimApp:
         self._message_handlers = []
         self._session_connect_handler = None
         self._session_disconnect_handler = None
+        self._init_handler = None
         self._running = True
 
     async def __aenter__(self):
@@ -183,6 +184,21 @@ class PASlimApp:
         self._session_disconnect_handler = func
         return func
 
+    def on_init(self, func):
+        """
+        Decorator to register an async initialization handler.
+
+        Called once at app startup, after connection but before message handling.
+        If the handler raises an exception, the app will abort with error details.
+
+        Example:
+            @app.on_init
+            async def init():
+                await setup_database()
+        """
+        self._init_handler = func
+        return func
+
     def stop(self):
         """Stop the application gracefully."""
         self._running = False
@@ -252,6 +268,13 @@ class PASlimApp:
         disc_field = self.config.message_discriminator
 
         async with self:
+            if self._init_handler:
+                try:
+                    await self._init_handler()
+                except Exception as e:
+                    logger.error(f"App initialization failed: {e}", exc_info=True)
+                    return
+
             async for session, msg in self:
                 if not self._running:
                     break
