@@ -1,4 +1,7 @@
 
+## V1.0.0
+
+  - added @app.on_init decorator
 
 ## v0.9.1
 
