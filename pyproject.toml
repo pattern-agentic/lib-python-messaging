@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "pattern_agentic_messaging"
-version = "1.0.0"
-description = "SLIM-powered messaging"
+version = "1.1.0"
+description = "SLIM and NATS powered messaging"
 authors = [
   { name="Amos Joshua", email="amos@patternagentic.ai" }
 ]
@@ -21,6 +21,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+nats = ["nats-py>=2.6.0,<3.0.0"]
 
 
 [tool.hatch.build.targets.wheel]
@@ -28,6 +29,7 @@ packages = ["src/pattern_agentic_messaging"]
 
 [dependency-groups]
 dev = [
+    "pydantic>=2.0",
     "pytest>=9.0.1",
     "pytest-asyncio>=0.21.1",
 ]

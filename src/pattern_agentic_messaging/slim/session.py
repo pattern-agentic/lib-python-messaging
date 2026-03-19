@@ -2,10 +2,9 @@ import asyncio
 import logging
 import uuid
 from typing import Optional, Callable, Any, Dict
-from datetime import timedelta
-from .types import MessagePayload
-from .messages import encode_message, decode_message
-from .exceptions import SessionClosedError, TimeoutError as PATimeoutError
+from ..types import MessagePayload
+from ..messages import encode_message, decode_message
+from ..exceptions import SessionClosedError, TimeoutError as PATimeoutError
 from .utils import parse_name
 
 logger = logging.getLogger(__name__)
@@ -23,7 +22,6 @@ class PASlimSession:
 
     @property
     def session_id(self) -> str:
-        """Unique identifier for this session instance."""
         return self._session_id
 
     async def _read_loop(self):

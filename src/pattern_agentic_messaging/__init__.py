@@ -1,6 +1,17 @@
-from .config import PASlimConfig, PASlimConfigP2P, PASlimConfigGroup
-from .session import PASlimSession, PASlimP2PSession, PASlimGroupSession
-from .app import PASlimApp
+from .base_app import PABaseApp
+from .slim import (
+    PASlimApp,
+    PASlimSession,
+    PASlimP2PSession,
+    PASlimGroupSession,
+    PASlimConfig,
+    PASlimConfigP2P,
+    PASlimConfigGroup,
+    create_shared_secret_auth,
+    create_jwt_auth,
+    parse_name,
+)
+from .nats import PANatsApp, PANatsSession, PANatsConfig
 from .types import MessagePayload
 from .exceptions import (
     PAMessagingError,
@@ -8,17 +19,24 @@ from .exceptions import (
     TimeoutError,
     AuthenticationError,
     SerializationError,
-    SessionClosedError
+    SessionClosedError,
 )
 
 __all__ = [
-    "PASlimConfig",
-    "PASlimConfigP2P",
-    "PASlimConfigGroup",
+    "PABaseApp",
+    "PASlimApp",
     "PASlimSession",
     "PASlimP2PSession",
     "PASlimGroupSession",
-    "PASlimApp",
+    "PASlimConfig",
+    "PASlimConfigP2P",
+    "PASlimConfigGroup",
+    "create_shared_secret_auth",
+    "create_jwt_auth",
+    "parse_name",
+    "PANatsApp",
+    "PANatsSession",
+    "PANatsConfig",
     "MessagePayload",
     "PAMessagingError",
     "ConnectionError",
