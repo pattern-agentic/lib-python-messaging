@@ -70,14 +70,17 @@ class PASlimSession:
     def __aiter__(self):
         return self
 
-    async def __anext__(self):
+    async def _next_with_context(self):
         if self._closed:
             raise StopAsyncIteration
         try:
-            _, msg = await self._queue.get()
-            return msg
+            return await self._queue.get()
         except asyncio.CancelledError:
             raise StopAsyncIteration
+
+    async def __anext__(self):
+        _, msg = await self._next_with_context()
+        return msg
 
     async def send(self, payload: MessagePayload):
         if self._closed:

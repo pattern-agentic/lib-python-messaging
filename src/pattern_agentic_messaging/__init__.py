@@ -10,6 +10,18 @@ from .exceptions import (
     SerializationError,
     SessionClosedError
 )
+from slim_bindings._slim_bindings import MessageContext
+from .a2a import (
+    Role,
+    TaskState,
+    Part,
+    Message,
+    Artifact,
+    TaskStatus,
+    Task,
+    TaskStatusUpdateEvent,
+    TaskArtifactUpdateEvent,
+)
 
 __all__ = [
     "PASlimConfig",
@@ -19,6 +31,7 @@ __all__ = [
     "PASlimP2PSession",
     "PASlimGroupSession",
     "PASlimApp",
+    "MessageContext",
     "MessagePayload",
     "PAMessagingError",
     "ConnectionError",
@@ -26,4 +39,13 @@ __all__ = [
     "AuthenticationError",
     "SerializationError",
     "SessionClosedError",
+    "Role",
+    "TaskState",
+    "Part",
+    "Message",
+    "Artifact",
+    "TaskStatus",
+    "Task",
+    "TaskStatusUpdateEvent",
+    "TaskArtifactUpdateEvent",
 ]
