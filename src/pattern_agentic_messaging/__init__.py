@@ -10,6 +10,7 @@ from .exceptions import (
     SerializationError,
     SessionClosedError
 )
+from slim_bindings._slim_bindings import MessageContext
 
 __all__ = [
     "PASlimConfig",
@@ -19,6 +20,7 @@ __all__ = [
     "PASlimP2PSession",
     "PASlimGroupSession",
     "PASlimApp",
+    "MessageContext",
     "MessagePayload",
     "PAMessagingError",
     "ConnectionError",

@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import slim_bindings
+from slim_bindings._slim_bindings import MessageContext
 from typing import AsyncIterator, Optional, Literal, get_type_hints, get_origin, get_args
 from .config import PASlimConfig
 from .session import PASlimSession, PASlimP2PSession, PASlimGroupSession
@@ -35,7 +36,6 @@ def _extract_literal_value(model: type, field_name: str) -> Optional[str]:
 
 
 def _get_pydantic_model_from_handler(func) -> Optional[type]:
-    """Extract Pydantic model type from handler's msg parameter, if present."""
     if not PYDANTIC_AVAILABLE:
         return None
     try:
@@ -46,6 +46,21 @@ def _get_pydantic_model_from_handler(func) -> Optional[type]:
     except Exception:
         pass
     return None
+
+
+def _wants_msg_context(func) -> bool:
+    try:
+        hints = get_type_hints(func)
+        return hints.get('msg_context') is MessageContext
+    except Exception:
+        return False
+
+
+async def _call_handler(handler, session, msg, msg_ctx, wants_ctx):
+    if wants_ctx:
+        await handler(session, msg, msg_ctx=msg_ctx)
+    else:
+        await handler(session, msg)
 
 
 class PASlimApp:
@@ -136,6 +151,7 @@ class PASlimApp:
                 'handler': func,
                 'model': model,
                 'discriminator_value': model_disc_value,
+                'wants_ctx': _wants_msg_context(func),
             })
             return func
 
@@ -275,7 +291,7 @@ class PASlimApp:
                     logger.error(f"App initialization failed: {e}", exc_info=True)
                     return
 
-            async for session, msg in self:
+            async for session, msg_ctx, msg in self:
                 if not self._running:
                     break
 
@@ -286,20 +302,19 @@ class PASlimApp:
                     handler = handler_info['handler']
                     model = handler_info.get('model')
                     model_disc_val = handler_info.get('discriminator_value')
+                    wants_ctx = handler_info['wants_ctx']
 
                     # Pydantic model handler
                     if model and isinstance(msg, dict):
-                        # Check discriminator match (fast path)
                         if model_disc_val is not None:
                             if msg.get(disc_field) != model_disc_val:
-                                continue  # Fall through to next handler
+                                continue
 
-                        # Try to parse
                         try:
                             parsed = model.model_validate(msg)
                             matched = True
                             try:
-                                await handler(session, parsed)
+                                await _call_handler(handler, session, parsed, msg_ctx, wants_ctx)
                             except Exception as exc:
                                 model_name = model.__name__ if model else "untyped"
                                 logger.error(f"Error in handler '{handler.__name__}' for message type '{model_name}': {exc}", exc_info=True)
@@ -317,7 +332,7 @@ class PASlimApp:
                         if isinstance(msg, dict) and msg.get(disc) == val:
                             matched = True
                             try:
-                                await handler(session, msg)
+                                await _call_handler(handler, session, msg, msg_ctx, wants_ctx)
                             except Exception as exc:
                                 logger.error(f"Error in handler '{handler.__name__}' for discriminator {disc}={val}: {exc}", exc_info=True)
                             break
@@ -326,12 +341,13 @@ class PASlimApp:
                 if not matched and catch_all_info:
                     handler = catch_all_info['handler']
                     model = catch_all_info.get('model')
+                    wants_ctx = catch_all_info['wants_ctx']
                     try:
                         if model and isinstance(msg, dict):
                             parsed = model.model_validate(msg)
-                            await handler(session, parsed)
+                            await _call_handler(handler, session, parsed, msg_ctx, wants_ctx)
                         else:
-                            await handler(session, msg)
+                            await _call_handler(handler, session, msg, msg_ctx, wants_ctx)
                     except ValidationError as e:
                         await session.send({
                             "error": "validation_error",
@@ -426,7 +442,7 @@ class PASlimApp:
             slim_session = await self._app.listen_for_session()
             yield PASlimP2PSession(slim_session)
 
-    async def messages(self) -> AsyncIterator[tuple[PASlimSession, MessagePayload]]:
+    async def messages(self) -> AsyncIterator[tuple[PASlimSession, MessageContext, MessagePayload]]:
         """
         Iterate over messages from all incoming sessions.
 
@@ -456,8 +472,12 @@ class PASlimApp:
                         logger.error(f"Error in session connect handler: {e}", exc_info=True)
 
                 async with session:
-                    async for msg in session:
-                        await message_queue.put((session, msg))
+                    while True:
+                        try:
+                            msg_ctx, msg = await session._next_with_context()
+                        except StopAsyncIteration:
+                            break
+                        await message_queue.put((session, msg_ctx, msg))
             except (StopAsyncIteration, asyncio.CancelledError):
                 pass
             except Exception as e:
@@ -490,11 +510,11 @@ class PASlimApp:
 
                 # Get next message with timeout to periodically check listener health
                 try:
-                    session, msg = await asyncio.wait_for(
+                    session, msg_ctx, msg = await asyncio.wait_for(
                         message_queue.get(),
                         timeout=0.1
                     )
-                    yield (session, msg)
+                    yield (session, msg_ctx, msg)
                 except asyncio.TimeoutError:
                     continue  # No message yet, loop back
 
