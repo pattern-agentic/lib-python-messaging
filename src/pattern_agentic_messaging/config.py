@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import Optional
@@ -7,12 +9,45 @@ from typing import Optional
 class PASlimConfig:
     local_name: str
     endpoint: str
+    auth_type: str = "shared_secret"
     auth_secret: Optional[str] = None
+    jwt_token_path: Optional[str] = None
+    jwt_jwks_url: Optional[str] = None
+    jwt_issuer: Optional[str] = None
+    jwt_audience: Optional[list[str]] = None
+    jwt_subject: Optional[str] = None
     max_retries: int = 5
     timeout: timedelta = field(default_factory=lambda: timedelta(seconds=5))
     mls_enabled: bool = True
     message_discriminator: Optional[str] = None
     custom_headers: Optional[dict[str, str]] = None
+
+    def with_no_auth(self) -> PASlimConfig:
+        self.auth_type = "none"
+        self.auth_secret = None
+        return self
+
+    def with_shared_secret(self, secret: str) -> PASlimConfig:
+        self.auth_type = "shared_secret"
+        self.auth_secret = secret
+        return self
+
+    def with_jwt_auth(
+        self,
+        token_path: str,
+        *,
+        jwks_url: Optional[str] = None,
+        issuer: Optional[str] = None,
+        audience: Optional[list[str]] = None,
+        subject: Optional[str] = None,
+    ) -> PASlimConfig:
+        self.auth_type = "jwt"
+        self.jwt_token_path = token_path
+        self.jwt_jwks_url = jwks_url
+        self.jwt_issuer = issuer
+        self.jwt_audience = audience
+        self.jwt_subject = subject
+        return self
 
 
 @dataclass

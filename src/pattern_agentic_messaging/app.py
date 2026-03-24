@@ -5,7 +5,7 @@ from slim_bindings._slim_bindings import MessageContext
 from typing import AsyncIterator, Optional, Literal, get_type_hints, get_origin, get_args
 from .config import PASlimConfig
 from .session import PASlimSession, PASlimP2PSession, PASlimGroupSession
-from .auth import create_shared_secret_auth
+from .auth import create_none_auth, create_shared_secret_auth, create_jwt_auth
 from .types import MessagePayload
 from .exceptions import AuthenticationError
 from .utils import parse_name
@@ -74,15 +74,31 @@ class PASlimApp:
         self._running = True
 
     async def __aenter__(self):
-        if not self.config.auth_secret:
-            raise AuthenticationError("auth_secret is required")
-        if len(self.config.auth_secret) < 32:
-            raise AuthenticationError("auth_secret must be at least 32 bytes")
+        auth_type = self.config.auth_type
 
-        auth_provider, auth_verifier = create_shared_secret_auth(
-            self.config.local_name,
-            self.config.auth_secret
-        )
+        if auth_type == "none":
+            auth_provider, auth_verifier = create_none_auth(self.config.local_name)
+        elif auth_type == "shared_secret":
+            if not self.config.auth_secret:
+                raise AuthenticationError("auth_secret is required for shared_secret auth")
+            if len(self.config.auth_secret) < 32:
+                raise AuthenticationError("auth_secret must be at least 32 bytes")
+            auth_provider, auth_verifier = create_shared_secret_auth(
+                self.config.local_name,
+                self.config.auth_secret,
+            )
+        elif auth_type == "jwt":
+            if not self.config.jwt_token_path:
+                raise AuthenticationError("jwt_token_path is required for jwt auth")
+            auth_provider, auth_verifier = create_jwt_auth(
+                self.config.jwt_token_path,
+                jwks_url=self.config.jwt_jwks_url,
+                issuer=self.config.jwt_issuer,
+                audience=self.config.jwt_audience,
+                subject=self.config.jwt_subject,
+            )
+        else:
+            raise AuthenticationError(f"Unknown auth_type: {auth_type}")
 
         local_name = parse_name(self.config.local_name)
         self._app = slim_bindings.Slim(local_name, auth_provider, auth_verifier)
