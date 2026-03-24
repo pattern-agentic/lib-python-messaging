@@ -5,7 +5,7 @@ from slim_bindings._slim_bindings import MessageContext
 from typing import AsyncIterator, Optional, Literal, get_type_hints, get_origin, get_args
 from .config import PASlimConfig
 from .session import PASlimSession, PASlimP2PSession, PASlimGroupSession
-from .auth import create_none_auth, create_shared_secret_auth, create_jwt_auth
+from .auth import create_none_auth, create_shared_secret_auth, create_jwt_auth, JWTClaims
 from .types import MessagePayload
 from .exceptions import AuthenticationError
 from .utils import parse_name
@@ -48,19 +48,27 @@ def _get_pydantic_model_from_handler(func) -> Optional[type]:
     return None
 
 
-def _wants_msg_context(func) -> bool:
+def _inspect_handler(func) -> dict:
     try:
         hints = get_type_hints(func)
-        return hints.get('msg_context') is MessageContext
     except Exception:
-        return False
+        return {'wants_ctx': False, 'wants_claims': False, 'claims_param': None}
+    wants_ctx = hints.get('msg_context') is MessageContext
+    claims_param = None
+    for name, hint in hints.items():
+        if hint is JWTClaims:
+            claims_param = name
+            break
+    return {'wants_ctx': wants_ctx, 'wants_claims': claims_param is not None, 'claims_param': claims_param}
 
 
-async def _call_handler(handler, session, msg, msg_ctx, wants_ctx):
-    if wants_ctx:
-        await handler(session, msg, msg_ctx=msg_ctx)
-    else:
-        await handler(session, msg)
+async def _call_handler(handler, session, msg, msg_ctx, injection):
+    kwargs = {}
+    if injection['wants_ctx']:
+        kwargs['msg_context'] = msg_ctx
+    if injection['wants_claims']:
+        kwargs[injection['claims_param']] = JWTClaims.from_token(msg_ctx.identity)
+    await handler(session, msg, **kwargs)
 
 
 class PASlimApp:
@@ -167,7 +175,7 @@ class PASlimApp:
                 'handler': func,
                 'model': model,
                 'discriminator_value': model_disc_value,
-                'wants_ctx': _wants_msg_context(func),
+                'injection': _inspect_handler(func),
             })
             return func
 
@@ -318,7 +326,7 @@ class PASlimApp:
                     handler = handler_info['handler']
                     model = handler_info.get('model')
                     model_disc_val = handler_info.get('discriminator_value')
-                    wants_ctx = handler_info['wants_ctx']
+                    injection = handler_info['injection']
 
                     # Pydantic model handler
                     if model and isinstance(msg, dict):
@@ -330,7 +338,7 @@ class PASlimApp:
                             parsed = model.model_validate(msg)
                             matched = True
                             try:
-                                await _call_handler(handler, session, parsed, msg_ctx, wants_ctx)
+                                await _call_handler(handler, session, parsed, msg_ctx, injection)
                             except Exception as exc:
                                 model_name = model.__name__ if model else "untyped"
                                 logger.error(f"Error in handler '{handler.__name__}' for message type '{model_name}': {exc}", exc_info=True)
@@ -348,7 +356,7 @@ class PASlimApp:
                         if isinstance(msg, dict) and msg.get(disc) == val:
                             matched = True
                             try:
-                                await _call_handler(handler, session, msg, msg_ctx, wants_ctx)
+                                await _call_handler(handler, session, msg, msg_ctx, injection)
                             except Exception as exc:
                                 logger.error(f"Error in handler '{handler.__name__}' for discriminator {disc}={val}: {exc}", exc_info=True)
                             break
@@ -357,13 +365,13 @@ class PASlimApp:
                 if not matched and catch_all_info:
                     handler = catch_all_info['handler']
                     model = catch_all_info.get('model')
-                    wants_ctx = catch_all_info['wants_ctx']
+                    injection = catch_all_info['injection']
                     try:
                         if model and isinstance(msg, dict):
                             parsed = model.model_validate(msg)
-                            await _call_handler(handler, session, parsed, msg_ctx, wants_ctx)
+                            await _call_handler(handler, session, parsed, msg_ctx, injection)
                         else:
-                            await _call_handler(handler, session, msg, msg_ctx, wants_ctx)
+                            await _call_handler(handler, session, msg, msg_ctx, injection)
                     except ValidationError as e:
                         await session.send({
                             "error": "validation_error",

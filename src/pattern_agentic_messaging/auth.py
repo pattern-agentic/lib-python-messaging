@@ -1,7 +1,34 @@
+from __future__ import annotations
+
+import base64
+import json
+from typing import Any, Optional, Tuple
+
 import slim_bindings
-from typing import Optional, Tuple
+from pydantic import BaseModel
 
 _AuthPair = Tuple[slim_bindings.IdentityProvider, slim_bindings.IdentityVerifier]
+
+_STANDARD_CLAIMS = frozenset({"iss", "sub", "aud", "exp", "nbf", "iat", "jti"})
+
+
+class JWTClaims(BaseModel):
+    iss: Optional[str] = None
+    sub: Optional[str] = None
+    aud: Optional[str | list[str]] = None
+    exp: Optional[int] = None
+    nbf: Optional[int] = None
+    iat: Optional[int] = None
+    jti: Optional[str] = None
+    extra: dict[str, Any] = {}
+
+    @classmethod
+    def from_token(cls, token: str) -> JWTClaims:
+        payload_segment = token.split(".")[1]
+        padded = payload_segment + "=" * (-len(payload_segment) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(padded))
+        standard = {k: payload.pop(k) for k in list(payload) if k in _STANDARD_CLAIMS}
+        return cls(**standard, extra=payload)
 
 _NONE_AUTH_SENTINEL = "pa-messaging-no-auth-00000000000"
 
