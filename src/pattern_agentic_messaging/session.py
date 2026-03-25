@@ -20,6 +20,7 @@ class PASlimSession:
         self._callbacks: list[Callable] = []
         self._pending_requests: dict[str, asyncio.Future] = {}
         self._closed = False
+        self._outgoing_metadata: dict[str, str] = {}
 
     @property
     def session_id(self) -> str:
@@ -82,11 +83,15 @@ class PASlimSession:
         _, msg = await self._next_with_context()
         return msg
 
-    async def send(self, payload: MessagePayload):
+    def set_metadata(self, metadata: dict[str, str]):
+        self._outgoing_metadata = metadata
+
+    async def send(self, payload: MessagePayload, metadata: Optional[dict[str, str]] = None):
         if self._closed:
             raise SessionClosedError("Session is closed")
         data = encode_message(payload)
-        handle = await self._session.publish(data)
+        merged = {**self._outgoing_metadata, **(metadata or {})}
+        handle = await self._session.publish(data, metadata=merged or None)
         await handle
 
     def on_message(self, callback: Callable[[Any], None]):

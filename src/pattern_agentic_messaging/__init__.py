@@ -11,6 +11,7 @@ from .exceptions import (
     SessionClosedError
 )
 from slim_bindings._slim_bindings import MessageContext
+from .auth import JWTClaims
 
 __all__ = [
     "PASlimConfig",
@@ -21,6 +22,7 @@ __all__ = [
     "PASlimGroupSession",
     "PASlimApp",
     "MessageContext",
+    "JWTClaims",
     "MessagePayload",
     "PAMessagingError",
     "ConnectionError",
