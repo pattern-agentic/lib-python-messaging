@@ -119,7 +119,12 @@ class PASlimApp:
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        pass
+        if self._app:
+            try:
+                await self._app.disconnect()
+            except Exception as e:
+                logger.debug(f"Error during SLIM disconnect: {e}")
+            self._app = None
 
     def __aiter__(self):
         return self.messages()
