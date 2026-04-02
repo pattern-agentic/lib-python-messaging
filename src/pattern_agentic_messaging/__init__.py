@@ -1,6 +1,7 @@
 from .config import PASlimConfig, PASlimConfigP2P, PASlimConfigGroup
 from .session import PASlimSession, PASlimP2PSession, PASlimGroupSession
 from .app import PASlimApp
+from .pool import SlimConnectionPool
 from .types import MessagePayload
 from .exceptions import (
     PAMessagingError,
@@ -21,6 +22,7 @@ __all__ = [
     "PASlimP2PSession",
     "PASlimGroupSession",
     "PASlimApp",
+    "SlimConnectionPool",
     "MessageContext",
     "JWTClaims",
     "MessagePayload",
