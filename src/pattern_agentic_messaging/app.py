@@ -48,6 +48,19 @@ def _get_pydantic_model_from_handler(func) -> Optional[type]:
     return None
 
 
+def _extract_required_keys(model: type) -> frozenset[str]:
+    """Extract the wire-level required field names from a Pydantic model.
+
+    Uses the alias (JSON key) when present, falling back to the Python field name.
+    Computed once at handler registration time.
+    """
+    keys = set()
+    for name, field in model.model_fields.items():
+        if field.is_required():
+            keys.add(field.alias if field.alias else name)
+    return frozenset(keys)
+
+
 def _inspect_handler(func) -> dict:
     try:
         hints = get_type_hints(func)
@@ -171,14 +184,10 @@ class PASlimApp:
             model_disc_value = None
 
             if model:
-                if not self.config.message_discriminator:
-                    raise ValueError(
-                        f"Handler '{func.__name__}' uses Pydantic type hint, "
-                        f"but config.message_discriminator is not set"
+                if self.config.message_discriminator:
+                    model_disc_value = _extract_literal_value(
+                        model, self.config.message_discriminator
                     )
-                model_disc_value = _extract_literal_value(
-                    model, self.config.message_discriminator
-                )
 
             self._message_handlers.append({
                 'discriminator': disc_field,
@@ -186,6 +195,7 @@ class PASlimApp:
                 'handler': func,
                 'model': model,
                 'discriminator_value': model_disc_value,
+                'required_keys': _extract_required_keys(model) if model else None,
                 'injection': _inspect_handler(func),
             })
             return func
@@ -309,10 +319,12 @@ class PASlimApp:
         if not self._message_handlers:
             raise ValueError("No message handlers registered. Use @app.on_message decorator.")
 
-        # Find catch-all handler (no discriminator and no model discriminator_value)
+        # Find catch-all handler (no discriminator, no model)
         catch_all_info = None
         for handler_info in self._message_handlers:
-            if handler_info['discriminator'] is None and handler_info.get('discriminator_value') is None:
+            if (handler_info['discriminator'] is None
+                    and handler_info.get('discriminator_value') is None
+                    and handler_info.get('model') is None):
                 catch_all_info = handler_info
                 break
 
@@ -337,32 +349,46 @@ class PASlimApp:
                     handler = handler_info['handler']
                     model = handler_info.get('model')
                     model_disc_val = handler_info.get('discriminator_value')
+                    required_keys = handler_info.get('required_keys')
                     injection = handler_info['injection']
 
-                    # Pydantic model handler
                     if model and isinstance(msg, dict):
+                        # Discriminator-matched model handler
                         if model_disc_val is not None:
                             if msg.get(disc_field) != model_disc_val:
                                 continue
-
-                        try:
-                            parsed = model.model_validate(msg)
-                            matched = True
                             try:
-                                await _call_handler(handler, session, parsed, msg_ctx, injection)
-                            except Exception as exc:
-                                model_name = model.__name__ if model else "untyped"
-                                logger.error(f"Error in handler '{handler.__name__}' for message type '{model_name}': {exc}", exc_info=True)
-                            break
-                        except ValidationError as e:
-                            matched = True
-                            await session.send({
-                                "error": "validation_error",
-                                "details": e.errors()
-                            })
-                            break
+                                parsed = model.model_validate(msg)
+                                matched = True
+                                try:
+                                    await _call_handler(handler, session, parsed, msg_ctx, injection)
+                                except Exception as exc:
+                                    logger.error(f"Error in handler '{handler.__name__}' for message type '{model.__name__}': {exc}", exc_info=True)
+                                break
+                            except ValidationError as e:
+                                matched = True
+                                await session.send({
+                                    "error": "validation_error",
+                                    "details": e.errors()
+                                })
+                                break
 
-                    # Legacy dict-based handler (skip catch-all for now)
+                        # Model-only handler: structural pre-check then try-validate
+                        elif required_keys is not None:
+                            if not required_keys <= msg.keys():
+                                continue
+                            try:
+                                parsed = model.model_validate(msg)
+                                matched = True
+                                try:
+                                    await _call_handler(handler, session, parsed, msg_ctx, injection)
+                                except Exception as exc:
+                                    logger.error(f"Error in handler '{handler.__name__}' for message type '{model.__name__}': {exc}", exc_info=True)
+                                break
+                            except ValidationError:
+                                continue
+
+                    # Legacy dict-based handler
                     elif disc is not None:
                         if isinstance(msg, dict) and msg.get(disc) == val:
                             matched = True
