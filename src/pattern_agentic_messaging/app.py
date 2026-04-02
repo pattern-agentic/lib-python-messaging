@@ -122,9 +122,15 @@ class PASlimApp:
         if self._app:
             try:
                 await self._app.disconnect(self.config.endpoint)
+            except KeyError:
+                logger.debug(f"SLIM disconnect skipped (no active connection to {self.config.endpoint})")
             except Exception as e:
-                logger.debug(f"Error during SLIM disconnect: {e}")
-            self._app = None
+                if exc_type is not None:
+                    logger.debug(f"SLIM disconnect during error cleanup: {e}")
+                else:
+                    logger.warning(f"SLIM disconnect failed: {e}")
+            finally:
+                self._app = None
 
     def __aiter__(self):
         return self.messages()
