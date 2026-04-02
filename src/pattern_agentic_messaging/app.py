@@ -109,7 +109,7 @@ class PASlimApp:
             raise AuthenticationError(f"Unknown auth_type: {auth_type}")
 
         local_name = parse_name(self.config.local_name)
-        self._app = slim_bindings.Slim(local_name, auth_provider, auth_verifier)
+        self._app = slim_bindings.Slim(local_name, auth_provider, auth_verifier, local_service=True)
 
         slim_config = {"endpoint": self.config.endpoint}
         if self.config.custom_headers:
