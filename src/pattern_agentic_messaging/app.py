@@ -1,7 +1,16 @@
 import asyncio
 import logging
-import slim_bindings
-from slim_bindings._slim_bindings import MessageContext
+from slim_bindings import (
+    App,
+    CaSource,
+    ClientConfig,
+    MessageContext,
+    Service,
+    SessionConfig,
+    SessionType,
+    TlsClientConfig,
+    TlsSource,
+)
 from typing import AsyncIterator, Optional, Literal, get_type_hints, get_origin, get_args
 from .config import PASlimConfig
 from .session import PASlimSession, PASlimP2PSession, PASlimGroupSession
@@ -87,7 +96,9 @@ async def _call_handler(handler, session, msg, msg_ctx, injection):
 class PASlimApp:
     def __init__(self, config: PASlimConfig):
         self.config = config
-        self._app: Optional[slim_bindings.Slim] = None
+        self._service: Optional[Service] = None
+        self._app: Optional[App] = None
+        self._conn_id: Optional[int] = None
         self._message_handlers = []
         self._session_connect_handler = None
         self._session_disconnect_handler = None
@@ -98,7 +109,7 @@ class PASlimApp:
         auth_type = self.config.auth_type
 
         if auth_type == "none":
-            auth_provider, auth_verifier = create_none_auth(self.config.local_name)
+            auth_provider, auth_verifier = create_none_auth()
         elif auth_type == "shared_secret":
             if not self.config.auth_secret:
                 raise AuthenticationError("auth_secret is required for shared_secret auth")
@@ -114,29 +125,43 @@ class PASlimApp:
             auth_provider, auth_verifier = create_jwt_auth(
                 self.config.jwt_token_path,
                 jwks_url=self.config.jwt_jwks_url,
+                jwks_content=self.config.jwt_jwks_content,
                 issuer=self.config.jwt_issuer,
                 audience=self.config.jwt_audience,
                 subject=self.config.jwt_subject,
+                duration=self.config.jwt_token_duration,
             )
         else:
             raise AuthenticationError(f"Unknown auth_type: {auth_type}")
 
+        service = Service(self.config.local_name)
+        tls = TlsClientConfig(
+            insecure=self.config.tls_insecure,
+            insecure_skip_verify=False,
+            source=TlsSource.NONE(),
+            ca_source=CaSource.NONE(),
+            include_system_ca_certs_pool=not self.config.tls_insecure,
+            tls_version="tls1.3",
+        )
+        client_config = ClientConfig(
+            endpoint=self.config.endpoint,
+            tls=tls,
+            headers=self.config.custom_headers,
+        )
+        conn_id = await service.connect_async(client_config)
+
         local_name = parse_name(self.config.local_name)
-        self._app = slim_bindings.Slim(local_name, auth_provider, auth_verifier, local_service=True)
+        app = await service.create_app_async(local_name, auth_provider, auth_verifier)
 
-        slim_config = {"endpoint": self.config.endpoint}
-        if self.config.custom_headers:
-            slim_config["headers"] = self.config.custom_headers
-        await self._app.connect(slim_config)
-
+        self._service = service
+        self._app = app
+        self._conn_id = conn_id
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        if self._app:
+        if self._service:
             try:
-                await self._app.disconnect(self.config.endpoint)
-            except KeyError:
-                logger.debug(f"SLIM disconnect skipped (no active connection to {self.config.endpoint})")
+                self._service.disconnect(self._conn_id)
             except Exception as e:
                 if exc_type is not None:
                     logger.debug(f"SLIM disconnect during error cleanup: {e}")
@@ -144,6 +169,8 @@ class PASlimApp:
                     logger.warning(f"SLIM disconnect failed: {e}")
             finally:
                 self._app = None
+                self._service = None
+                self._conn_id = None
 
     def __aiter__(self):
         return self.messages()
@@ -419,6 +446,15 @@ class PASlimApp:
                 elif not matched:
                     logger.warning(f"No handler for message: {msg}")
 
+    def _session_config(self, session_type: SessionType) -> SessionConfig:
+        return SessionConfig(
+            session_type=session_type,
+            enable_mls=self.config.mls_enabled,
+            max_retries=self.config.max_retries,
+            interval=self.config.timeout,
+            metadata={},
+        )
+
     async def connect(self, peer_name: str) -> PASlimP2PSession:
         """
         Connect to a peer (P2P Active mode).
@@ -430,16 +466,11 @@ class PASlimApp:
             PASlimP2PSession for communicating with the peer
         """
         peer = parse_name(peer_name)
-        await self._app.set_route(peer)
-
-        session_config = slim_bindings.SessionConfiguration.PointToPoint(
-            max_retries=self.config.max_retries,
-            timeout=self.config.timeout,
-            mls_enabled=self.config.mls_enabled
+        await self._app.set_route_async(peer, self._conn_id)
+        session = await self._app.create_session_and_wait_async(
+            self._session_config(SessionType.POINT_TO_POINT), peer
         )
-        slim_session, handle = await self._app.create_session(peer, session_config)
-        await handle
-        return PASlimP2PSession(slim_session)
+        return PASlimP2PSession(session)
 
     async def accept(self) -> PASlimP2PSession:
         """
@@ -448,8 +479,8 @@ class PASlimApp:
         Returns:
             PASlimP2PSession for the incoming connection
         """
-        slim_session = await self._app.listen_for_session()
-        return PASlimP2PSession(slim_session)
+        session = await self._app.listen_for_session_async(None)
+        return PASlimP2PSession(session)
 
     async def create_channel(self, channel_name: str, invites: list[str] = None) -> PASlimGroupSession:
         """
@@ -466,18 +497,14 @@ class PASlimApp:
             invites = []
 
         channel = parse_name(channel_name)
-        session_config = slim_bindings.SessionConfiguration.Group(
-            max_retries=self.config.max_retries,
-            timeout=self.config.timeout,
-            mls_enabled=self.config.mls_enabled
+        slim_session = await self._app.create_session_and_wait_async(
+            self._session_config(SessionType.GROUP), channel
         )
-        slim_session, handle = await self._app.create_session(channel, session_config)
-        await handle
         session = PASlimGroupSession(slim_session)
 
         for invite in invites:
             participant = parse_name(invite)
-            await self._app.set_route(participant)
+            await self._app.set_route_async(participant, self._conn_id)
             await session.invite(invite)
 
         return session
@@ -489,8 +516,8 @@ class PASlimApp:
         Returns:
             PASlimGroupSession for the channel
         """
-        slim_session = await self._app.listen_for_session()
-        return PASlimGroupSession(slim_session)
+        session = await self._app.listen_for_session_async(None)
+        return PASlimGroupSession(session)
 
     async def listen(self) -> AsyncIterator[PASlimP2PSession]:
         """
@@ -500,8 +527,8 @@ class PASlimApp:
             PASlimP2PSession for each incoming connection
         """
         while True:
-            slim_session = await self._app.listen_for_session()
-            yield PASlimP2PSession(slim_session)
+            session = await self._app.listen_for_session_async(None)
+            yield PASlimP2PSession(session)
 
     async def messages(self) -> AsyncIterator[tuple[PASlimSession, MessageContext, MessagePayload]]:
         """

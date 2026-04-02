@@ -33,6 +33,7 @@ class SlimConnectionPool:
         token_path: str,
         *,
         jwks_url: Optional[str] = None,
+        jwks_content: Optional[str] = None,
         issuer: Optional[str] = None,
         audience: Optional[list[str]] = None,
         subject: Optional[str] = None,
@@ -41,6 +42,7 @@ class SlimConnectionPool:
             token_path, jwks_url=jwks_url, issuer=issuer,
             audience=audience, subject=subject,
         )
+        self._template.jwt_jwks_content = jwks_content
         return self
 
     async def _get_lock(self, key: str) -> asyncio.Lock:

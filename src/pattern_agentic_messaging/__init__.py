@@ -11,7 +11,7 @@ from .exceptions import (
     SerializationError,
     SessionClosedError
 )
-from slim_bindings._slim_bindings import MessageContext
+from slim_bindings import MessageContext
 from .auth import JWTClaims
 
 __all__ = [
