@@ -66,9 +66,14 @@ def create_jwt_auth(
     subject: Optional[str] = None,
 ) -> _AuthPair:
     provider = slim_bindings.IdentityProvider.StaticJwt(path=token_path)
+    placeholder_key = slim_bindings.Key(
+        key=slim_bindings.KeyData.Content("{}"),
+        format=slim_bindings.KeyFormat.Jwks,
+        algorithm=slim_bindings.Algorithm.RS256,
+    )
     verifier = slim_bindings.IdentityVerifier.Jwt(
-        public_key=None,
-        autoresolve=jwks_url is not None,
+        public_key=placeholder_key,
+        autoresolve=True,
         issuer=issuer,
         audience=audience,
         subject=subject,
