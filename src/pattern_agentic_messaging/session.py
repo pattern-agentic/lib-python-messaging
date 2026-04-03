@@ -24,13 +24,14 @@ class PASlimSession:
 
     @property
     def session_id(self) -> str:
-        """Unique identifier for this session instance."""
         return self._session_id
 
     async def _read_loop(self):
         while not self._closed:
             try:
-                msg_ctx, payload = await self._session.get_message()
+                received = await self._session.get_message_async(None)
+                msg_ctx = received.context
+                payload = received.payload
                 decoded = decode_message(payload)
 
                 if isinstance(decoded, dict) and "_request_id" in decoded:
@@ -91,8 +92,7 @@ class PASlimSession:
             raise SessionClosedError("Session is closed")
         data = encode_message(payload)
         merged = {**self._outgoing_metadata, **(metadata or {})}
-        handle = await self._session.publish(data, metadata=merged or None)
-        await handle
+        await self._session.publish_and_wait_async(data, None, merged or None)
 
     def on_message(self, callback: Callable[[Any], None]):
         self._callbacks.append(callback)
@@ -131,10 +131,8 @@ class PASlimP2PSession(PASlimSession):
 class PASlimGroupSession(PASlimSession):
     async def invite(self, participant_name: str):
         name = parse_name(participant_name)
-        handle = await self._session.invite(name)
-        await handle
+        await self._session.invite_and_wait_async(name)
 
     async def remove(self, participant_name: str):
         name = parse_name(participant_name)
-        handle = await self._session.remove(name)
-        await handle
+        await self._session.remove_and_wait_async(name)

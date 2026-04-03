@@ -2,14 +2,28 @@ from __future__ import annotations
 
 import base64
 import json
+from datetime import timedelta
 from typing import Any, Optional, Tuple
 
-import slim_bindings
 from pydantic import BaseModel
+from slim_bindings import (
+    IdentityProviderConfig,
+    IdentityVerifierConfig,
+    JwtAlgorithm,
+    JwtAuth,
+    JwtKeyConfig,
+    JwtKeyData,
+    JwtKeyFormat,
+    JwtKeyType,
+    StaticJwtAuth,
+)
 
-_AuthPair = Tuple[slim_bindings.IdentityProvider, slim_bindings.IdentityVerifier]
+from .exceptions import AuthenticationError
+
+_AuthPair = Tuple[IdentityProviderConfig, IdentityVerifierConfig]
 
 _STANDARD_CLAIMS = frozenset({"iss", "sub", "aud", "exp", "nbf", "iat", "jti"})
+_DEFAULT_DURATION = timedelta(seconds=3600)
 
 
 class JWTClaims(BaseModel):
@@ -30,47 +44,62 @@ class JWTClaims(BaseModel):
         standard = {k: payload.pop(k) for k in list(payload) if k in _STANDARD_CLAIMS}
         return cls(**standard, extra=payload)
 
-_NONE_AUTH_SENTINEL = "pa-messaging-no-auth-00000000000"
 
-
-def create_none_auth(identity: str) -> _AuthPair:
-    provider = slim_bindings.IdentityProvider.SharedSecret(
-        identity=identity,
-        shared_secret=_NONE_AUTH_SENTINEL,
-    )
-    verifier = slim_bindings.IdentityVerifier.SharedSecret(
-        identity=identity,
-        shared_secret=_NONE_AUTH_SENTINEL,
-    )
-    return provider, verifier
+def create_none_auth() -> _AuthPair:
+    return IdentityProviderConfig.NONE(), IdentityVerifierConfig.NONE()
 
 
 def create_shared_secret_auth(identity: str, secret: str) -> _AuthPair:
-    provider = slim_bindings.IdentityProvider.SharedSecret(
-        identity=identity,
-        shared_secret=secret,
-    )
-    verifier = slim_bindings.IdentityVerifier.SharedSecret(
-        identity=identity,
-        shared_secret=secret,
-    )
+    provider = IdentityProviderConfig.SHARED_SECRET(id=identity, data=secret)
+    verifier = IdentityVerifierConfig.SHARED_SECRET(id=identity, data=secret)
     return provider, verifier
+
+
+def _fetch_jwks(url: str) -> str:
+    import httpx
+    try:
+        resp = httpx.get(url, timeout=10)
+        resp.raise_for_status()
+        return resp.text
+    except Exception as e:
+        raise AuthenticationError(f"Failed to fetch JWKS from {url}: {e}")
 
 
 def create_jwt_auth(
     token_path: str,
     *,
     jwks_url: Optional[str] = None,
+    jwks_content: Optional[str] = None,
     issuer: Optional[str] = None,
     audience: Optional[list[str]] = None,
     subject: Optional[str] = None,
+    duration: timedelta = _DEFAULT_DURATION,
 ) -> _AuthPair:
-    provider = slim_bindings.IdentityProvider.StaticJwt(path=token_path)
-    verifier = slim_bindings.IdentityVerifier.Jwt(
-        public_key=None,
-        autoresolve=jwks_url is not None,
-        issuer=issuer,
-        audience=audience,
-        subject=subject,
+    provider = IdentityProviderConfig.STATIC_JWT(
+        config=StaticJwtAuth(token_file=token_path, duration=duration)
+    )
+
+    if jwks_content:
+        key_data = jwks_content
+    elif jwks_url:
+        key_data = _fetch_jwks(jwks_url)
+    else:
+        raise AuthenticationError("Either jwks_url or jwks_content must be provided for JWT auth")
+
+    key = JwtKeyType.DECODING(
+        key=JwtKeyConfig(
+            algorithm=JwtAlgorithm.RS256,
+            format=JwtKeyFormat.JWKS,
+            key=JwtKeyData.DATA(key_data),
+        )
+    )
+    verifier = IdentityVerifierConfig.JWT(
+        config=JwtAuth(
+            key=key,
+            audience=audience,
+            issuer=issuer,
+            subject=subject,
+            duration=duration,
+        )
     )
     return provider, verifier

@@ -1,6 +1,7 @@
 from .config import PASlimConfig, PASlimConfigP2P, PASlimConfigGroup
 from .session import PASlimSession, PASlimP2PSession, PASlimGroupSession
 from .app import PASlimApp
+from .pool import SlimConnectionPool
 from .types import MessagePayload
 from .exceptions import (
     PAMessagingError,
@@ -10,8 +11,9 @@ from .exceptions import (
     SerializationError,
     SessionClosedError
 )
-from slim_bindings._slim_bindings import MessageContext
+from slim_bindings import MessageContext
 from .auth import JWTClaims
+from .session_token import PatternAgentSessionToken
 
 __all__ = [
     "PASlimConfig",
@@ -21,6 +23,7 @@ __all__ = [
     "PASlimP2PSession",
     "PASlimGroupSession",
     "PASlimApp",
+    "SlimConnectionPool",
     "MessageContext",
     "JWTClaims",
     "MessagePayload",
@@ -30,4 +33,5 @@ __all__ = [
     "AuthenticationError",
     "SerializationError",
     "SessionClosedError",
+    "PatternAgentSessionToken",
 ]

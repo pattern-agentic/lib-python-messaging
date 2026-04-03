@@ -1,11 +1,29 @@
 import asyncio
 import logging
-import slim_bindings
-from slim_bindings._slim_bindings import MessageContext
+from slim_bindings import (
+    App,
+    CaSource,
+    ClientConfig,
+    MessageContext,
+    Service,
+    SessionConfig,
+    SessionType,
+    TlsClientConfig,
+    TlsSource,
+    initialize_with_defaults,
+    is_initialized,
+    uniffi_set_event_loop,
+    get_global_service,
+    new_tracing_config,
+    new_runtime_config,
+    new_service_config,
+    initialize_with_configs,
+)
 from typing import AsyncIterator, Optional, Literal, get_type_hints, get_origin, get_args
 from .config import PASlimConfig
 from .session import PASlimSession, PASlimP2PSession, PASlimGroupSession
 from .auth import create_none_auth, create_shared_secret_auth, create_jwt_auth, JWTClaims
+from .session_token import PatternAgentSessionToken
 from .types import MessagePayload
 from .exceptions import AuthenticationError
 from .utils import parse_name
@@ -48,44 +66,82 @@ def _get_pydantic_model_from_handler(func) -> Optional[type]:
     return None
 
 
+def _extract_required_keys(model: type) -> frozenset[str]:
+    """Extract the wire-level required field names from a Pydantic model.
+
+    Uses the alias (JSON key) when present, falling back to the Python field name.
+    Computed once at handler registration time.
+    """
+    keys = set()
+    for name, field in model.model_fields.items():
+        if field.is_required():
+            keys.add(field.alias if field.alias else name)
+    return frozenset(keys)
+
+
 def _inspect_handler(func) -> dict:
     try:
         hints = get_type_hints(func)
     except Exception:
-        return {'wants_ctx': False, 'wants_claims': False, 'claims_param': None}
+        return {'wants_ctx': False, 'wants_claims': False, 'claims_param': None, 'session_token_param': None}
     wants_ctx = hints.get('msg_context') is MessageContext
     claims_param = None
+    session_token_param = None
     for name, hint in hints.items():
         if hint is JWTClaims:
             claims_param = name
-            break
-    return {'wants_ctx': wants_ctx, 'wants_claims': claims_param is not None, 'claims_param': claims_param}
+        elif hint is PatternAgentSessionToken:
+            session_token_param = name
+    return {
+        'wants_ctx': wants_ctx,
+        'wants_claims': claims_param is not None,
+        'claims_param': claims_param,
+        'session_token_param': session_token_param,
+    }
 
 
-async def _call_handler(handler, session, msg, msg_ctx, injection):
+async def _call_handler(handler, session, msg, msg_ctx, injection, session_token_verifier=None):
     kwargs = {}
     if injection['wants_ctx']:
         kwargs['msg_context'] = msg_ctx
     if injection['wants_claims']:
         kwargs[injection['claims_param']] = JWTClaims.from_token(msg_ctx.identity)
+    if injection['session_token_param']:
+        try:
+            token = PatternAgentSessionToken.from_metadata(msg_ctx.metadata)
+        except Exception as e:
+            logger.warning(f"Session token extraction failed: {e}")
+            await session.send({"system_error": "invalid_session_token", "detail": str(e)})
+            return
+        if session_token_verifier:
+            try:
+                await session_token_verifier(token.raw_token)
+            except Exception as e:
+                logger.warning(f"Session token verification failed: {e}")
+                await session.send({"system_error": "session_token_verification_failed", "detail": str(e)})
+                return
+        kwargs[injection['session_token_param']] = token
     await handler(session, msg, **kwargs)
 
 
 class PASlimApp:
     def __init__(self, config: PASlimConfig):
         self.config = config
-        self._app: Optional[slim_bindings.Slim] = None
+        self._service: Optional[Service] = None
+        self._app: Optional[App] = None
+        self._conn_id: Optional[int] = None
         self._message_handlers = []
         self._session_connect_handler = None
         self._session_disconnect_handler = None
-        self._init_handler = None
+        self._init_handlers = []
         self._running = True
+        self.session_token_verifier = None
 
     async def __aenter__(self):
         auth_type = self.config.auth_type
 
         if auth_type == "none":
-            auth_provider, auth_verifier = create_none_auth(self.config.local_name)
+            auth_provider, auth_verifier = create_none_auth()
         elif auth_type == "shared_secret":
             if not self.config.auth_secret:
                 raise AuthenticationError("auth_secret is required for shared_secret auth")
@@ -101,25 +157,66 @@ class PASlimApp:
             auth_provider, auth_verifier = create_jwt_auth(
                 self.config.jwt_token_path,
                 jwks_url=self.config.jwt_jwks_url,
+                jwks_content=self.config.jwt_jwks_content,
                 issuer=self.config.jwt_issuer,
                 audience=self.config.jwt_audience,
                 subject=self.config.jwt_subject,
+                duration=self.config.jwt_token_duration,
             )
         else:
             raise AuthenticationError(f"Unknown auth_type: {auth_type}")
 
+        uniffi_set_event_loop(asyncio.get_running_loop())
+
+        if not is_initialized():
+            initialize_with_configs(
+                tracing_config=new_tracing_config(),
+                runtime_config=new_runtime_config(),
+                service_config=[new_service_config()],
+            )
+
+        service = get_global_service()
+        tls = TlsClientConfig(
+            insecure=self.config.tls_insecure,
+            insecure_skip_verify=False,
+            source=TlsSource.NONE(),
+            ca_source=CaSource.NONE(),
+            include_system_ca_certs_pool=not self.config.tls_insecure,
+            tls_version="tls1.3",
+        )
+        client_config = ClientConfig(
+            endpoint=self.config.endpoint,
+            tls=tls,
+            headers=self.config.custom_headers,
+        )
+        conn_id = await service.connect_async(client_config)
+
         local_name = parse_name(self.config.local_name)
-        self._app = slim_bindings.Slim(local_name, auth_provider, auth_verifier)
+        if auth_type == "shared_secret":
+            app = service.create_app_with_secret(local_name, self.config.auth_secret)
+        else:
+            app = service.create_app(local_name, auth_provider, auth_verifier)
 
-        slim_config = {"endpoint": self.config.endpoint}
-        if self.config.custom_headers:
-            slim_config["headers"] = self.config.custom_headers
-        await self._app.connect(slim_config)
+        await app.subscribe_async(local_name, conn_id)
 
+        self._service = service
+        self._app = app
+        self._conn_id = conn_id
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        pass
+        if self._service:
+            try:
+                self._service.disconnect(self._conn_id)
+            except Exception as e:
+                if exc_type is not None:
+                    logger.debug(f"SLIM disconnect during error cleanup: {e}")
+                else:
+                    logger.warning(f"SLIM disconnect failed: {e}")
+            finally:
+                self._app = None
+                self._service = None
+                self._conn_id = None
 
     def __aiter__(self):
         return self.messages()
@@ -160,14 +257,10 @@ class PASlimApp:
             model_disc_value = None
 
             if model:
-                if not self.config.message_discriminator:
-                    raise ValueError(
-                        f"Handler '{func.__name__}' uses Pydantic type hint, "
-                        f"but config.message_discriminator is not set"
+                if self.config.message_discriminator:
+                    model_disc_value = _extract_literal_value(
+                        model, self.config.message_discriminator
                     )
-                model_disc_value = _extract_literal_value(
-                    model, self.config.message_discriminator
-                )
 
             self._message_handlers.append({
                 'discriminator': disc_field,
@@ -175,6 +268,7 @@ class PASlimApp:
                 'handler': func,
                 'model': model,
                 'discriminator_value': model_disc_value,
+                'required_keys': _extract_required_keys(model) if model else None,
                 'injection': _inspect_handler(func),
             })
             return func
@@ -228,15 +322,16 @@ class PASlimApp:
         """
         Decorator to register an async initialization handler.
 
+        Multiple handlers can be registered; they run in order.
         Called once at app startup, after connection but before message handling.
-        If the handler raises an exception, the app will abort with error details.
+        If any handler raises an exception, the app will abort with error details.
 
         Example:
             @app.on_init
             async def init():
                 await setup_database()
         """
-        self._init_handler = func
+        self._init_handlers.append(func)
         return func
 
     def stop(self):
@@ -298,19 +393,21 @@ class PASlimApp:
         if not self._message_handlers:
             raise ValueError("No message handlers registered. Use @app.on_message decorator.")
 
-        # Find catch-all handler (no discriminator and no model discriminator_value)
+        # Find catch-all handler (no discriminator, no model)
         catch_all_info = None
         for handler_info in self._message_handlers:
-            if handler_info['discriminator'] is None and handler_info.get('discriminator_value') is None:
+            if (handler_info['discriminator'] is None
+                    and handler_info.get('discriminator_value') is None
+                    and handler_info.get('model') is None):
                 catch_all_info = handler_info
                 break
 
         disc_field = self.config.message_discriminator
 
         async with self:
-            if self._init_handler:
+            for init_handler in self._init_handlers:
                 try:
-                    await self._init_handler()
+                    await init_handler()
                 except Exception as e:
                     logger.error(f"App initialization failed: {e}", exc_info=True)
                     return
@@ -326,37 +423,51 @@ class PASlimApp:
                     handler = handler_info['handler']
                     model = handler_info.get('model')
                     model_disc_val = handler_info.get('discriminator_value')
+                    required_keys = handler_info.get('required_keys')
                     injection = handler_info['injection']
 
-                    # Pydantic model handler
                     if model and isinstance(msg, dict):
+                        # Discriminator-matched model handler
                         if model_disc_val is not None:
                             if msg.get(disc_field) != model_disc_val:
                                 continue
-
-                        try:
-                            parsed = model.model_validate(msg)
-                            matched = True
                             try:
-                                await _call_handler(handler, session, parsed, msg_ctx, injection)
-                            except Exception as exc:
-                                model_name = model.__name__ if model else "untyped"
-                                logger.error(f"Error in handler '{handler.__name__}' for message type '{model_name}': {exc}", exc_info=True)
-                            break
-                        except ValidationError as e:
-                            matched = True
-                            await session.send({
-                                "error": "validation_error",
-                                "details": e.errors()
-                            })
-                            break
+                                parsed = model.model_validate(msg)
+                                matched = True
+                                try:
+                                    await _call_handler(handler, session, parsed, msg_ctx, injection, self.session_token_verifier)
+                                except Exception as exc:
+                                    logger.error(f"Error in handler '{handler.__name__}' for message type '{model.__name__}': {exc}", exc_info=True)
+                                break
+                            except ValidationError as e:
+                                matched = True
+                                await session.send({
+                                    "error": "validation_error",
+                                    "details": e.errors()
+                                })
+                                break
 
-                    # Legacy dict-based handler (skip catch-all for now)
+                        # Model-only handler: structural pre-check then try-validate
+                        elif required_keys is not None:
+                            if not required_keys <= msg.keys():
+                                continue
+                            try:
+                                parsed = model.model_validate(msg)
+                                matched = True
+                                try:
+                                    await _call_handler(handler, session, parsed, msg_ctx, injection, self.session_token_verifier)
+                                except Exception as exc:
+                                    logger.error(f"Error in handler '{handler.__name__}' for message type '{model.__name__}': {exc}", exc_info=True)
+                                break
+                            except ValidationError:
+                                continue
+
+                    # Legacy dict-based handler
                     elif disc is not None:
                         if isinstance(msg, dict) and msg.get(disc) == val:
                             matched = True
                             try:
-                                await _call_handler(handler, session, msg, msg_ctx, injection)
+                                await _call_handler(handler, session, msg, msg_ctx, injection, self.session_token_verifier)
                             except Exception as exc:
                                 logger.error(f"Error in handler '{handler.__name__}' for discriminator {disc}={val}: {exc}", exc_info=True)
                             break
@@ -369,9 +480,9 @@ class PASlimApp:
                     try:
                         if model and isinstance(msg, dict):
                             parsed = model.model_validate(msg)
-                            await _call_handler(handler, session, parsed, msg_ctx, injection)
+                            await _call_handler(handler, session, parsed, msg_ctx, injection, self.session_token_verifier)
                         else:
-                            await _call_handler(handler, session, msg, msg_ctx, injection)
+                            await _call_handler(handler, session, msg, msg_ctx, injection, self.session_token_verifier)
                     except ValidationError as e:
                         await session.send({
                             "error": "validation_error",
@@ -381,6 +492,15 @@ class PASlimApp:
                         logger.error(f"Error in fallback message handler '{handler.__name__}': {exc}", exc_info=True)
                 elif not matched:
                     logger.warning(f"No handler for message: {msg}")
+
+    def _session_config(self, session_type: SessionType) -> SessionConfig:
+        return SessionConfig(
+            session_type=session_type,
+            enable_mls=self.config.mls_enabled,
+            max_retries=self.config.max_retries,
+            interval=self.config.timeout,
+            metadata={},
+        )
 
     async def connect(self, peer_name: str) -> PASlimP2PSession:
         """
@@ -393,16 +513,11 @@ class PASlimApp:
             PASlimP2PSession for communicating with the peer
         """
         peer = parse_name(peer_name)
-        await self._app.set_route(peer)
-
-        session_config = slim_bindings.SessionConfiguration.PointToPoint(
-            max_retries=self.config.max_retries,
-            timeout=self.config.timeout,
-            mls_enabled=self.config.mls_enabled
+        await self._app.set_route_async(peer, self._conn_id)
+        session = await self._app.create_session_and_wait_async(
+            self._session_config(SessionType.POINT_TO_POINT), peer
         )
-        slim_session, handle = await self._app.create_session(peer, session_config)
-        await handle
-        return PASlimP2PSession(slim_session)
+        return PASlimP2PSession(session)
 
     async def accept(self) -> PASlimP2PSession:
         """
@@ -411,8 +526,8 @@ class PASlimApp:
         Returns:
             PASlimP2PSession for the incoming connection
         """
-        slim_session = await self._app.listen_for_session()
-        return PASlimP2PSession(slim_session)
+        session = await self._app.listen_for_session_async(None)
+        return PASlimP2PSession(session)
 
     async def create_channel(self, channel_name: str, invites: list[str] = None) -> PASlimGroupSession:
         """
@@ -429,18 +544,14 @@ class PASlimApp:
             invites = []
 
         channel = parse_name(channel_name)
-        session_config = slim_bindings.SessionConfiguration.Group(
-            max_retries=self.config.max_retries,
-            timeout=self.config.timeout,
-            mls_enabled=self.config.mls_enabled
+        slim_session = await self._app.create_session_and_wait_async(
+            self._session_config(SessionType.GROUP), channel
         )
-        slim_session, handle = await self._app.create_session(channel, session_config)
-        await handle
         session = PASlimGroupSession(slim_session)
 
         for invite in invites:
             participant = parse_name(invite)
-            await self._app.set_route(participant)
+            await self._app.set_route_async(participant, self._conn_id)
             await session.invite(invite)
 
         return session
@@ -452,8 +563,8 @@ class PASlimApp:
         Returns:
             PASlimGroupSession for the channel
         """
-        slim_session = await self._app.listen_for_session()
-        return PASlimGroupSession(slim_session)
+        session = await self._app.listen_for_session_async(None)
+        return PASlimGroupSession(session)
 
     async def listen(self) -> AsyncIterator[PASlimP2PSession]:
         """
@@ -463,8 +574,8 @@ class PASlimApp:
             PASlimP2PSession for each incoming connection
         """
         while True:
-            slim_session = await self._app.listen_for_session()
-            yield PASlimP2PSession(slim_session)
+            session = await self._app.listen_for_session_async(None)
+            yield PASlimP2PSession(session)
 
     async def messages(self) -> AsyncIterator[tuple[PASlimSession, MessageContext, MessagePayload]]:
         """
