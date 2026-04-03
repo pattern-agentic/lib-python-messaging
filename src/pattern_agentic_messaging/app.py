@@ -10,6 +10,14 @@ from slim_bindings import (
     SessionType,
     TlsClientConfig,
     TlsSource,
+    initialize_with_defaults,
+    is_initialized,
+    uniffi_set_event_loop,
+    get_global_service,
+    new_tracing_config,
+    new_runtime_config,
+    new_service_config,
+    initialize_with_configs,
 )
 from typing import AsyncIterator, Optional, Literal, get_type_hints, get_origin, get_args
 from .config import PASlimConfig
@@ -134,7 +142,16 @@ class PASlimApp:
         else:
             raise AuthenticationError(f"Unknown auth_type: {auth_type}")
 
-        service = Service(self.config.local_name)
+        uniffi_set_event_loop(asyncio.get_running_loop())
+
+        if not is_initialized():
+            initialize_with_configs(
+                tracing_config=new_tracing_config(),
+                runtime_config=new_runtime_config(),
+                service_config=[new_service_config()],
+            )
+
+        service = get_global_service()
         tls = TlsClientConfig(
             insecure=self.config.tls_insecure,
             insecure_skip_verify=False,
@@ -151,7 +168,12 @@ class PASlimApp:
         conn_id = await service.connect_async(client_config)
 
         local_name = parse_name(self.config.local_name)
-        app = await service.create_app_async(local_name, auth_provider, auth_verifier)
+        if auth_type == "shared_secret":
+            app = service.create_app_with_secret(local_name, self.config.auth_secret)
+        else:
+            app = service.create_app(local_name, auth_provider, auth_verifier)
+
+        await app.subscribe_async(local_name, conn_id)
 
         self._service = service
         self._app = app

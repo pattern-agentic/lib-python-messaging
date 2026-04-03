@@ -54,6 +54,7 @@ class PASlimConfig:
         self.jwt_issuer = issuer
         self.jwt_audience = audience
         self.jwt_subject = subject
+        self.mls_enabled = False
         return self
 
 
