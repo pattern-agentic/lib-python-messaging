@@ -23,6 +23,7 @@ from typing import AsyncIterator, Optional, Literal, get_type_hints, get_origin,
 from .config import PASlimConfig
 from .session import PASlimSession, PASlimP2PSession, PASlimGroupSession
 from .auth import create_none_auth, create_shared_secret_auth, create_jwt_auth, JWTClaims
+from .session_token import PatternAgentSessionToken
 from .types import MessagePayload
 from .exceptions import AuthenticationError
 from .utils import parse_name
@@ -82,22 +83,44 @@ def _inspect_handler(func) -> dict:
     try:
         hints = get_type_hints(func)
     except Exception:
-        return {'wants_ctx': False, 'wants_claims': False, 'claims_param': None}
+        return {'wants_ctx': False, 'wants_claims': False, 'claims_param': None, 'session_token_param': None}
     wants_ctx = hints.get('msg_context') is MessageContext
     claims_param = None
+    session_token_param = None
     for name, hint in hints.items():
         if hint is JWTClaims:
             claims_param = name
-            break
-    return {'wants_ctx': wants_ctx, 'wants_claims': claims_param is not None, 'claims_param': claims_param}
+        elif hint is PatternAgentSessionToken:
+            session_token_param = name
+    return {
+        'wants_ctx': wants_ctx,
+        'wants_claims': claims_param is not None,
+        'claims_param': claims_param,
+        'session_token_param': session_token_param,
+    }
 
 
-async def _call_handler(handler, session, msg, msg_ctx, injection):
+async def _call_handler(handler, session, msg, msg_ctx, injection, session_token_verifier=None):
     kwargs = {}
     if injection['wants_ctx']:
         kwargs['msg_context'] = msg_ctx
     if injection['wants_claims']:
         kwargs[injection['claims_param']] = JWTClaims.from_token(msg_ctx.identity)
+    if injection['session_token_param']:
+        try:
+            token = PatternAgentSessionToken.from_metadata(msg_ctx.metadata)
+        except Exception as e:
+            logger.warning(f"Session token extraction failed: {e}")
+            await session.send({"system_error": "invalid_session_token", "detail": str(e)})
+            return
+        if session_token_verifier:
+            try:
+                await session_token_verifier(token.raw_token)
+            except Exception as e:
+                logger.warning(f"Session token verification failed: {e}")
+                await session.send({"system_error": "session_token_verification_failed", "detail": str(e)})
+                return
+        kwargs[injection['session_token_param']] = token
     await handler(session, msg, **kwargs)
 
 
@@ -110,8 +133,9 @@ class PASlimApp:
         self._message_handlers = []
         self._session_connect_handler = None
         self._session_disconnect_handler = None
-        self._init_handler = None
+        self._init_handlers = []
         self._running = True
+        self.session_token_verifier = None
 
     async def __aenter__(self):
         auth_type = self.config.auth_type
@@ -298,15 +322,16 @@ class PASlimApp:
         """
         Decorator to register an async initialization handler.
 
+        Multiple handlers can be registered; they run in order.
         Called once at app startup, after connection but before message handling.
-        If the handler raises an exception, the app will abort with error details.
+        If any handler raises an exception, the app will abort with error details.
 
         Example:
             @app.on_init
             async def init():
                 await setup_database()
         """
-        self._init_handler = func
+        self._init_handlers.append(func)
         return func
 
     def stop(self):
@@ -380,9 +405,9 @@ class PASlimApp:
         disc_field = self.config.message_discriminator
 
         async with self:
-            if self._init_handler:
+            for init_handler in self._init_handlers:
                 try:
-                    await self._init_handler()
+                    await init_handler()
                 except Exception as e:
                     logger.error(f"App initialization failed: {e}", exc_info=True)
                     return
@@ -410,7 +435,7 @@ class PASlimApp:
                                 parsed = model.model_validate(msg)
                                 matched = True
                                 try:
-                                    await _call_handler(handler, session, parsed, msg_ctx, injection)
+                                    await _call_handler(handler, session, parsed, msg_ctx, injection, self.session_token_verifier)
                                 except Exception as exc:
                                     logger.error(f"Error in handler '{handler.__name__}' for message type '{model.__name__}': {exc}", exc_info=True)
                                 break
@@ -430,7 +455,7 @@ class PASlimApp:
                                 parsed = model.model_validate(msg)
                                 matched = True
                                 try:
-                                    await _call_handler(handler, session, parsed, msg_ctx, injection)
+                                    await _call_handler(handler, session, parsed, msg_ctx, injection, self.session_token_verifier)
                                 except Exception as exc:
                                     logger.error(f"Error in handler '{handler.__name__}' for message type '{model.__name__}': {exc}", exc_info=True)
                                 break
@@ -442,7 +467,7 @@ class PASlimApp:
                         if isinstance(msg, dict) and msg.get(disc) == val:
                             matched = True
                             try:
-                                await _call_handler(handler, session, msg, msg_ctx, injection)
+                                await _call_handler(handler, session, msg, msg_ctx, injection, self.session_token_verifier)
                             except Exception as exc:
                                 logger.error(f"Error in handler '{handler.__name__}' for discriminator {disc}={val}: {exc}", exc_info=True)
                             break
@@ -455,9 +480,9 @@ class PASlimApp:
                     try:
                         if model and isinstance(msg, dict):
                             parsed = model.model_validate(msg)
-                            await _call_handler(handler, session, parsed, msg_ctx, injection)
+                            await _call_handler(handler, session, parsed, msg_ctx, injection, self.session_token_verifier)
                         else:
-                            await _call_handler(handler, session, msg, msg_ctx, injection)
+                            await _call_handler(handler, session, msg, msg_ctx, injection, self.session_token_verifier)
                     except ValidationError as e:
                         await session.send({
                             "error": "validation_error",

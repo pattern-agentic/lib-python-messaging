@@ -13,6 +13,7 @@ from .exceptions import (
 )
 from slim_bindings import MessageContext
 from .auth import JWTClaims
+from .session_token import PatternAgentSessionToken
 
 __all__ = [
     "PASlimConfig",
@@ -32,4 +33,5 @@ __all__ = [
     "AuthenticationError",
     "SerializationError",
     "SessionClosedError",
+    "PatternAgentSessionToken",
 ]
