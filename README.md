@@ -152,3 +152,7 @@ async with PASlimApp(config) as app:
         await session.send({"result": result})
 ```
 
+## Message Types
+
+All messages carry a `metadata.__pa_type` discriminator. See [docs/message-types.md](docs/message-types.md).
+

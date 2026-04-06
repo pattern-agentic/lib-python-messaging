@@ -23,9 +23,13 @@ class PASlimConfig:
     jwt_token_duration: timedelta = field(default_factory=lambda: _DEFAULT_TOKEN_DURATION)
     max_retries: int = 5
     timeout: timedelta = field(default_factory=lambda: timedelta(seconds=5))
+    connect_timeout_sec: float = 30.0
     mls_enabled: bool = True
     message_discriminator: Optional[str] = None
     custom_headers: Optional[dict[str, str]] = None
+    audit_nats_url: Optional[str] = None
+    audit_nats_subject_prefix: str = "pa.audit.messages"
+    audit_nats_creds_file: Optional[str] = None
 
     def with_no_auth(self) -> PASlimConfig:
         self.auth_type = "none"
