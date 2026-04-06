@@ -14,6 +14,8 @@ from .exceptions import (
 from slim_bindings import MessageContext
 from .auth import JWTClaims
 from .session_token import PatternAgentSessionToken
+from .audit import AuditPublisher
+from .message_types import PAType, PASystemError, PA_TYPE_KEY, tag_a2a_message, tag_a2a_task_status, get_pa_type
 
 __all__ = [
     "PASlimConfig",
@@ -34,4 +36,11 @@ __all__ = [
     "SerializationError",
     "SessionClosedError",
     "PatternAgentSessionToken",
+    "AuditPublisher",
+    "PAType",
+    "PASystemError",
+    "PA_TYPE_KEY",
+    "tag_a2a_message",
+    "tag_a2a_task_status",
+    "get_pa_type",
 ]

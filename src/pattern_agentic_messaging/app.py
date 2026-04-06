@@ -24,6 +24,7 @@ from .config import PASlimConfig
 from .session import PASlimSession, PASlimP2PSession, PASlimGroupSession
 from .auth import create_none_auth, create_shared_secret_auth, create_jwt_auth, JWTClaims
 from .session_token import PatternAgentSessionToken
+from .message_types import PASystemError
 from .types import MessagePayload
 from .exceptions import AuthenticationError
 from .utils import parse_name
@@ -111,14 +112,14 @@ async def _call_handler(handler, session, msg, msg_ctx, injection, session_token
             token = PatternAgentSessionToken.from_metadata(msg_ctx.metadata)
         except Exception as e:
             logger.warning(f"Session token extraction failed: {e}")
-            await session.send({"system_error": "invalid_session_token", "detail": str(e)})
+            await session.send(PASystemError(error="invalid_session_token", detail=str(e)).to_payload())
             return
         if session_token_verifier:
             try:
                 await session_token_verifier(token.raw_token)
             except Exception as e:
                 logger.warning(f"Session token verification failed: {e}")
-                await session.send({"system_error": "session_token_verification_failed", "detail": str(e)})
+                await session.send(PASystemError(error="session_token_verification_failed", detail=str(e)).to_payload())
                 return
         kwargs[injection['session_token_param']] = token
     await handler(session, msg, **kwargs)
@@ -136,6 +137,7 @@ class PASlimApp:
         self._init_handlers = []
         self._running = True
         self.session_token_verifier = None
+        self._audit_publisher = None
 
     async def __aenter__(self):
         auth_type = self.config.auth_type
@@ -189,22 +191,47 @@ class PASlimApp:
             tls=tls,
             headers=self.config.custom_headers,
         )
+        logger.info(f"SLIM __aenter__: connecting to endpoint={self.config.endpoint}")
         conn_id = await service.connect_async(client_config)
+        logger.info(f"SLIM __aenter__: connected conn_id={conn_id}")
 
         local_name = parse_name(self.config.local_name)
         if auth_type == "shared_secret":
             app = service.create_app_with_secret(local_name, self.config.auth_secret)
         else:
             app = service.create_app(local_name, auth_provider, auth_verifier)
+        logger.info(f"SLIM __aenter__: app created name={self.config.local_name}")
 
         await app.subscribe_async(local_name, conn_id)
+        logger.info(f"SLIM __aenter__: subscribed name={self.config.local_name}")
 
         self._service = service
         self._app = app
         self._conn_id = conn_id
+
+        if self.config.audit_nats_url:
+            try:
+                from .audit import AuditPublisher
+                self._audit_publisher = AuditPublisher(
+                    self.config.audit_nats_url,
+                    subject_prefix=self.config.audit_nats_subject_prefix,
+                    creds_file=self.config.audit_nats_creds_file,
+                )
+                await self._audit_publisher.connect()
+            except Exception as e:
+                logger.warning(f"Audit publisher init failed (audit disabled): {e}")
+                self._audit_publisher = None
+
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
+        if self._audit_publisher:
+            try:
+                await self._audit_publisher.close()
+            except Exception:
+                pass
+            self._audit_publisher = None
+
         if self._service:
             try:
                 self._service.disconnect(self._conn_id)
@@ -502,22 +529,30 @@ class PASlimApp:
             metadata={},
         )
 
-    async def connect(self, peer_name: str) -> PASlimP2PSession:
+    async def connect(self, peer_name: str, timeout: Optional[float] = None) -> PASlimP2PSession:
         """
         Connect to a peer (P2P Active mode).
 
         Args:
             peer_name: Peer identifier (e.g., "org/namespace/app")
+            timeout: Connection timeout in seconds (default: config.connect_timeout_sec)
 
         Returns:
             PASlimP2PSession for communicating with the peer
+
+        Raises:
+            asyncio.TimeoutError: If the peer doesn't respond within the timeout
         """
+        connect_timeout = timeout or self.config.connect_timeout_sec
         peer = parse_name(peer_name)
         await self._app.set_route_async(peer, self._conn_id)
-        session = await self._app.create_session_and_wait_async(
-            self._session_config(SessionType.POINT_TO_POINT), peer
+        session = await asyncio.wait_for(
+            self._app.create_session_and_wait_async(
+                self._session_config(SessionType.POINT_TO_POINT), peer
+            ),
+            timeout=connect_timeout,
         )
-        return PASlimP2PSession(session)
+        return PASlimP2PSession(session, audit_publisher=self._audit_publisher, local_name=self.config.local_name, peer_name=peer_name)
 
     async def accept(self) -> PASlimP2PSession:
         """
@@ -527,7 +562,7 @@ class PASlimApp:
             PASlimP2PSession for the incoming connection
         """
         session = await self._app.listen_for_session_async(None)
-        return PASlimP2PSession(session)
+        return PASlimP2PSession(session, audit_publisher=self._audit_publisher, local_name=self.config.local_name)
 
     async def create_channel(self, channel_name: str, invites: list[str] = None) -> PASlimGroupSession:
         """
@@ -547,7 +582,7 @@ class PASlimApp:
         slim_session = await self._app.create_session_and_wait_async(
             self._session_config(SessionType.GROUP), channel
         )
-        session = PASlimGroupSession(slim_session)
+        session = PASlimGroupSession(slim_session, audit_publisher=self._audit_publisher, local_name=self.config.local_name, peer_name=channel_name)
 
         for invite in invites:
             participant = parse_name(invite)
@@ -564,7 +599,7 @@ class PASlimApp:
             PASlimGroupSession for the channel
         """
         session = await self._app.listen_for_session_async(None)
-        return PASlimGroupSession(session)
+        return PASlimGroupSession(session, audit_publisher=self._audit_publisher, local_name=self.config.local_name)
 
     async def listen(self) -> AsyncIterator[PASlimP2PSession]:
         """
@@ -575,7 +610,7 @@ class PASlimApp:
         """
         while True:
             session = await self._app.listen_for_session_async(None)
-            yield PASlimP2PSession(session)
+            yield PASlimP2PSession(session, audit_publisher=self._audit_publisher, local_name=self.config.local_name)
 
     async def messages(self) -> AsyncIterator[tuple[PASlimSession, MessageContext, MessagePayload]]:
         """

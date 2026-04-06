@@ -6,12 +6,14 @@ from datetime import timedelta
 from .types import MessagePayload
 from .messages import encode_message, decode_message
 from .exceptions import SessionClosedError, TimeoutError as PATimeoutError
+from .session_token import SESSION_TOKEN_METADATA_KEY
+from .message_types import tag_a2a_message
 from .utils import parse_name
 
 logger = logging.getLogger(__name__)
 
 class PASlimSession:
-    def __init__(self, slim_session):
+    def __init__(self, slim_session, *, audit_publisher=None, local_name: str = "", peer_name: str = ""):
         self._session = slim_session
         self._session_id = str(uuid.uuid4())
         self.context: Dict[str, Any] = {}
@@ -21,6 +23,9 @@ class PASlimSession:
         self._pending_requests: dict[str, asyncio.Future] = {}
         self._closed = False
         self._outgoing_metadata: dict[str, str] = {}
+        self._audit_publisher = audit_publisher
+        self._local_name = local_name
+        self._peer_name = peer_name
 
     @property
     def session_id(self) -> str:
@@ -33,6 +38,10 @@ class PASlimSession:
                 msg_ctx = received.context
                 payload = received.payload
                 decoded = decode_message(payload)
+
+                incoming_metadata = getattr(msg_ctx, 'metadata', None) or {}
+                if SESSION_TOKEN_METADATA_KEY in incoming_metadata:
+                    self._outgoing_metadata[SESSION_TOKEN_METADATA_KEY] = incoming_metadata[SESSION_TOKEN_METADATA_KEY]
 
                 if isinstance(decoded, dict) and "_request_id" in decoded:
                     request_id = decoded["_request_id"]
@@ -93,6 +102,22 @@ class PASlimSession:
         data = encode_message(payload)
         merged = {**self._outgoing_metadata, **(metadata or {})}
         await self._session.publish_and_wait_async(data, None, merged or None)
+        if self._audit_publisher:
+            try:
+                from .session_token import PatternAgentSessionToken
+                token = PatternAgentSessionToken.from_metadata(merged) if merged else None
+                audit_payload = tag_a2a_message(dict(payload)) if isinstance(payload, dict) else payload
+                await self._audit_publisher.publish(
+                    audit_payload,
+                    sender=self._local_name,
+                    recipient=self._peer_name,
+                    tenant_id=token.tenant_id if token else None,
+                    session_id=token.session_id if token else None,
+                    user_id=token.user_id if token else None,
+                    task_id=payload.get("taskId") if isinstance(payload, dict) else None,
+                )
+            except Exception:
+                logger.debug("Audit publish failed", exc_info=True)
 
     def on_message(self, callback: Callable[[Any], None]):
         self._callbacks.append(callback)

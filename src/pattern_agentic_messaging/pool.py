@@ -53,11 +53,14 @@ class SlimConnectionPool:
 
     async def acquire(self, key: str, local_name: str) -> PASlimApp:
         lock = await self._get_lock(key)
+        logger.info(f"SLIM pool acquire: waiting for lock key={key}")
 
         async with lock:
+            logger.info(f"SLIM pool acquire: lock acquired key={key}")
             if key not in self._apps:
                 config = replace(self._template, local_name=local_name)
                 app = PASlimApp(config)
+                logger.info(f"SLIM pool: connecting app key={key} name={local_name} endpoint={config.endpoint}")
                 await app.__aenter__()
                 self._apps[key] = app
                 self._refcounts[key] = 0
