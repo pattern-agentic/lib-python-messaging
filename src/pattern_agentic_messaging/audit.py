@@ -29,7 +29,11 @@ class AuditPublisher:
             connect_opts = {"servers": [self._nats_url]}
             if self._creds_file:
                 connect_opts["user_credentials"] = self._creds_file
-            await self._nc.connect(**connect_opts)
+            try:
+                await self._nc.connect(**connect_opts)
+            except Exception as e:
+                self._nc = None
+                raise ConnectionError(f"Audit publisher failed to connect to NATS at {self._nats_url}: {e}") from e
             self._js = self._nc.jetstream()
             logger.info(f"Audit publisher connected to {self._nats_url}")
 
@@ -56,8 +60,8 @@ class AuditPublisher:
         if not self._nc or not self._nc.is_connected:
             try:
                 await self.connect()
-            except Exception:
-                logger.warning("Audit publish skipped: NATS not connected", exc_info=True)
+            except ConnectionError as e:
+                logger.warning(str(e))
                 return
 
         if isinstance(payload, bytes):
