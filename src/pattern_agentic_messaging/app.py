@@ -80,48 +80,71 @@ def _extract_required_keys(model: type) -> frozenset[str]:
     return frozenset(keys)
 
 
-def _inspect_handler(func) -> dict:
+def _inspect_handler(func, registered_providers=None) -> dict:
     try:
         hints = get_type_hints(func)
     except Exception:
-        return {'wants_ctx': False, 'wants_claims': False, 'claims_param': None, 'session_token_param': None}
+        return {'wants_ctx': False, 'wants_claims': False, 'claims_param': None, 'session_token_param': None, 'provider_params': {}}
     wants_ctx = hints.get('msg_context') is MessageContext
     claims_param = None
     session_token_param = None
+    provider_params = {}
+    skip = {'session', 'msg', 'msg_context', 'return'}
     for name, hint in hints.items():
+        if name in skip:
+            continue
         if hint is JWTClaims:
             claims_param = name
         elif hint is PatternAgentSessionToken:
             session_token_param = name
+        elif registered_providers and hint in registered_providers:
+            provider_params[name] = hint
     return {
         'wants_ctx': wants_ctx,
         'wants_claims': claims_param is not None,
         'claims_param': claims_param,
         'session_token_param': session_token_param,
+        'provider_params': provider_params,
     }
 
 
-async def _call_handler(handler, session, msg, msg_ctx, injection, session_token_verifier=None):
+async def _call_handler(handler, session, msg, msg_ctx, injection, session_token_verifier=None, providers=None):
     kwargs = {}
     if injection['wants_ctx']:
         kwargs['msg_context'] = msg_ctx
     if injection['wants_claims']:
         kwargs[injection['claims_param']] = JWTClaims.from_token(msg_ctx.identity)
-    if injection['session_token_param']:
+
+    token = None
+    needs_token = injection['session_token_param'] or injection['provider_params']
+    if needs_token:
         try:
             token = PatternAgentSessionToken.from_metadata(msg_ctx.metadata)
         except Exception as e:
             logger.warning(f"Session token extraction failed: {e}")
             await session.send(PASystemError(error="invalid_session_token", detail=str(e)).to_payload())
             return
-        if session_token_verifier:
+        if token and session_token_verifier:
             try:
                 await session_token_verifier(token.raw_token)
             except Exception as e:
                 logger.warning(f"Session token verification failed: {e}")
                 await session.send(PASystemError(error="session_token_verification_failed", detail=str(e)).to_payload())
                 return
-        kwargs[injection['session_token_param']] = token
+        if injection['session_token_param'] and token:
+            kwargs[injection['session_token_param']] = token
+
+    if injection['provider_params'] and providers:
+        for param_name, hint_type in injection['provider_params'].items():
+            provider = providers.get(hint_type)
+            if provider:
+                try:
+                    kwargs[param_name] = await provider(session, token)
+                except Exception as e:
+                    logger.error(f"Provider for {hint_type.__name__} failed: {e}")
+                    await session.send(PASystemError(error="provider_failed", detail=str(e)).to_payload())
+                    return
+
     await handler(session, msg, **kwargs)
 
 
@@ -137,6 +160,7 @@ class PASlimApp:
         self._init_handlers = []
         self._running = True
         self.session_token_verifier = None
+        self._injection_providers: dict[type, any] = {}
         self._audit_publisher = None
 
     async def __aenter__(self):
@@ -248,6 +272,9 @@ class PASlimApp:
     def __aiter__(self):
         return self.messages()
 
+    def register_provider(self, type_class: type, provider):
+        self._injection_providers[type_class] = provider
+
     def on_message(self, discriminator=None, value=None):
         """
         Decorator to register a message handler with optional filtering.
@@ -296,7 +323,7 @@ class PASlimApp:
                 'model': model,
                 'discriminator_value': model_disc_value,
                 'required_keys': _extract_required_keys(model) if model else None,
-                'injection': _inspect_handler(func),
+                'injection': _inspect_handler(func, self._injection_providers),
             })
             return func
 
@@ -462,7 +489,7 @@ class PASlimApp:
                                 parsed = model.model_validate(msg)
                                 matched = True
                                 try:
-                                    await _call_handler(handler, session, parsed, msg_ctx, injection, self.session_token_verifier)
+                                    await _call_handler(handler, session, parsed, msg_ctx, injection, self.session_token_verifier, self._injection_providers)
                                 except Exception as exc:
                                     logger.error(f"Error in handler '{handler.__name__}' for message type '{model.__name__}': {exc}", exc_info=True)
                                 break
@@ -482,7 +509,7 @@ class PASlimApp:
                                 parsed = model.model_validate(msg)
                                 matched = True
                                 try:
-                                    await _call_handler(handler, session, parsed, msg_ctx, injection, self.session_token_verifier)
+                                    await _call_handler(handler, session, parsed, msg_ctx, injection, self.session_token_verifier, self._injection_providers)
                                 except Exception as exc:
                                     logger.error(f"Error in handler '{handler.__name__}' for message type '{model.__name__}': {exc}", exc_info=True)
                                 break
@@ -494,7 +521,7 @@ class PASlimApp:
                         if isinstance(msg, dict) and msg.get(disc) == val:
                             matched = True
                             try:
-                                await _call_handler(handler, session, msg, msg_ctx, injection, self.session_token_verifier)
+                                await _call_handler(handler, session, msg, msg_ctx, injection, self.session_token_verifier, self._injection_providers)
                             except Exception as exc:
                                 logger.error(f"Error in handler '{handler.__name__}' for discriminator {disc}={val}: {exc}", exc_info=True)
                             break
@@ -507,9 +534,9 @@ class PASlimApp:
                     try:
                         if model and isinstance(msg, dict):
                             parsed = model.model_validate(msg)
-                            await _call_handler(handler, session, parsed, msg_ctx, injection, self.session_token_verifier)
+                            await _call_handler(handler, session, parsed, msg_ctx, injection, self.session_token_verifier, self._injection_providers)
                         else:
-                            await _call_handler(handler, session, msg, msg_ctx, injection, self.session_token_verifier)
+                            await _call_handler(handler, session, msg, msg_ctx, injection, self.session_token_verifier, self._injection_providers)
                     except ValidationError as e:
                         await session.send({
                             "error": "validation_error",
